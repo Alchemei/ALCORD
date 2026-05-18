@@ -8,6 +8,7 @@ function createWindow () {
     minWidth: 900,
     minHeight: 600,
     backgroundColor: '#0f172a',
+    icon: path.join(__dirname, 'icon.png'), // Özel pencere ve görev çubuğu logosu
     frame: false, // İşletim sisteminin varsayılan pencere çerçevesini kapatır
     webPreferences: {
       nodeIntegration: true, // HTML içinden require('electron') kullanımına izin verir
