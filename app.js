@@ -1223,9 +1223,7 @@ function syncGlobalShortcuts() {
     if (window.process && window.process.type) {
         try {
             const { ipcRenderer } = window.require('electron');
-            const micShortcut = convertToAccelerator(hotkeyMic);
-            const deafenShortcut = convertToAccelerator(hotkeyDeafen);
-            ipcRenderer.send('register-hotkeys', { micShortcut, deafenShortcut });
+            ipcRenderer.send('register-hotkeys', { hotkeyMic, hotkeyDeafen });
         } catch (e) {
             console.error('Failed to sync global shortcuts:', e);
         }

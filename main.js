@@ -1,9 +1,84 @@
-const { app, BrowserWindow, ipcMain, session, desktopCapturer, Tray, Menu, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, session, desktopCapturer, Tray, Menu } = require('electron');
 const path = require('path');
+const { spawn } = require('child_process');
 
 let mainWindow;
 let tray;
 let isQuitting = false;
+let keyListenerProcess = null;
+
+let currentMicHotkey = null;
+let currentDeafenHotkey = null;
+
+function normalizeKeyName(csharpKey) {
+  let k = csharpKey.toLowerCase();
+  if (k === 'space') return ' ';
+  if (k === 'scroll') return 'scrolllock';
+  if (k === 'capital') return 'capslock';
+  if (k === 'prior') return 'pageup';
+  if (k === 'next') return 'pagedown';
+  if (k === 'up') return 'arrowup';
+  if (k === 'down') return 'arrowdown';
+  if (k === 'left') return 'arrowleft';
+  if (k === 'right') return 'arrowright';
+  return k;
+}
+
+function matchesHotkey(pressed, hotkey) {
+  if (!hotkey || !hotkey.key) return false;
+  
+  const pressedKey = normalizeKeyName(pressed.key);
+  const hotkeyKey = hotkey.key.toLowerCase();
+  
+  const keyMatch = pressedKey === hotkeyKey;
+  const ctrlMatch = pressed.ctrl === !!hotkey.ctrlKey;
+  const altMatch = pressed.alt === !!hotkey.altKey;
+  const shiftMatch = pressed.shift === !!hotkey.shiftKey;
+  
+  return keyMatch && ctrlMatch && altMatch && shiftMatch;
+}
+
+function startKeyListener() {
+  const exePath = path.join(__dirname, 'keylistener.exe');
+  keyListenerProcess = spawn(exePath);
+
+  keyListenerProcess.stdout.on('data', (data) => {
+    const lines = data.toString().split('\n');
+    for (let line of lines) {
+      line = line.trim();
+      if (!line) continue;
+      
+      // Format: Key:M|Ctrl:False|Alt:True|Shift:False
+      const match = line.match(/^Key:([^|]+)\|Ctrl:([^|]+)\|Alt:([^|]+)\|Shift:(.+)$/);
+      if (match) {
+        const pressed = {
+          key: match[1],
+          ctrl: match[2].toLowerCase() === 'true',
+          alt: match[3].toLowerCase() === 'true',
+          shift: match[4].toLowerCase() === 'true'
+        };
+
+        if (matchesHotkey(pressed, currentMicHotkey)) {
+          if (mainWindow) mainWindow.webContents.send('toggle-mute-global');
+        }
+        if (matchesHotkey(pressed, currentDeafenHotkey)) {
+          if (mainWindow) mainWindow.webContents.send('toggle-deafen-global');
+        }
+      }
+    }
+  });
+
+  keyListenerProcess.stderr.on('data', (data) => {
+    console.error('KeyListener error:', data.toString());
+  });
+
+  keyListenerProcess.on('close', (code) => {
+    console.log(`KeyListener exited with code ${code}`);
+    if (!isQuitting) {
+      setTimeout(startKeyListener, 1000);
+    }
+  });
+}
 
 function createWindow () {
   mainWindow = new BrowserWindow({
@@ -100,44 +175,21 @@ function createTray() {
 }
 
 // Global Kısayol IPC Kayıt Dinleyicisi
-ipcMain.on('register-hotkeys', (event, { micShortcut, deafenShortcut }) => {
-  globalShortcut.unregisterAll();
+ipcMain.on('register-hotkeys', (event, { hotkeyMic, hotkeyDeafen }) => {
+  currentMicHotkey = hotkeyMic;
+  currentDeafenHotkey = hotkeyDeafen;
+  console.log('Registered global hotkeys via C# Hook:', { currentMicHotkey, currentDeafenHotkey });
   
-  let micReg = false;
-  let deafenReg = false;
-
-  if (micShortcut) {
-    try {
-      micReg = globalShortcut.register(micShortcut, () => {
-        if (mainWindow) mainWindow.webContents.send('toggle-mute-global');
-      });
-      console.log(`Registered mic shortcut: ${micShortcut} - Success: ${micReg}`);
-    } catch (e) {
-      console.error('Failed to register global mic shortcut:', e);
-    }
-  }
-  
-  if (deafenShortcut) {
-    try {
-      deafenReg = globalShortcut.register(deafenShortcut, () => {
-        if (mainWindow) mainWindow.webContents.send('toggle-deafen-global');
-      });
-      console.log(`Registered deafen shortcut: ${deafenShortcut} - Success: ${deafenReg}`);
-    } catch (e) {
-      console.error('Failed to register global deafen shortcut:', e);
-    }
-  }
-
-  // Durumu renderer tarafına raporlayalım
   event.reply('hotkey-register-status', {
-    mic: { shortcut: micShortcut, success: micReg },
-    deafen: { shortcut: deafenShortcut, success: deafenReg }
+    mic: { shortcut: hotkeyMic ? hotkeyMic.key : null, success: true },
+    deafen: { shortcut: hotkeyDeafen ? hotkeyDeafen.key : null, success: true }
   });
 });
 
 app.whenReady().then(() => {
   createWindow();
   createTray();
+  startKeyListener();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -147,7 +199,10 @@ app.whenReady().then(() => {
 });
 
 app.on('will-quit', () => {
-  globalShortcut.unregisterAll();
+  isQuitting = true;
+  if (keyListenerProcess) {
+    keyListenerProcess.kill();
+  }
 });
 
 app.on('window-all-closed', () => {
