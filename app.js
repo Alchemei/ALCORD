@@ -103,6 +103,11 @@ let messages = [];
 let localStream = null;
 let mediaConnections = new Map(); 
 
+// Remote Web Audio State for high quality gain and volume boosting up to 300%
+let remoteAudioCtx = null;
+let remoteGainNodes = new Map(); // peerId -> GainNode
+let remoteSources = new Map(); // peerId -> MediaStreamAudioSourceNode
+
 // RNNoise
 let rnnoiseWasmBinary = null;
 let rnnoiseReady = false;
@@ -518,6 +523,20 @@ function leaveVoiceChannel() {
     mediaConnections.clear();
     remoteAudiosContainer.innerHTML = '';
     
+    // Clean up Web Audio peer nodes and context
+    remoteGainNodes.forEach((node) => {
+        try { node.disconnect(); } catch(e){}
+    });
+    remoteGainNodes.clear();
+    remoteSources.forEach((node) => {
+        try { node.disconnect(); } catch(e){}
+    });
+    remoteSources.clear();
+    if (remoteAudioCtx) {
+        try { remoteAudioCtx.close(); } catch(e){}
+        remoteAudioCtx = null;
+    }
+
     updateVoiceState(null);
     activeVoicePanel.classList.add('hidden');
     activeVoicePanel.classList.remove('flex');
@@ -602,6 +621,17 @@ function stopScreenShare() {
     showToast('Ekran paylaşımı sonlandırıldı.', 'info');
 }
 
+function getRemoteAudioContext() {
+    if (!remoteAudioCtx) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        remoteAudioCtx = new AudioContext({ sampleRate: 48000 });
+    }
+    if (remoteAudioCtx.state === 'suspended') {
+        remoteAudioCtx.resume();
+    }
+    return remoteAudioCtx;
+}
+
 function setupRemoteMedia(call) {
     if (call.metadata && call.metadata.type === 'screen-share') {
         activeIncomingScreenCall = call;
@@ -630,18 +660,58 @@ function setupRemoteMedia(call) {
             audio = document.createElement('audio');
             audio.id = `audio-${call.peer}`;
             audio.autoplay = true;
+            audio.muted = true; // Mute the tag so Web Audio handles output without double audio!
             remoteAudiosContainer.appendChild(audio);
         }
         audio.srcObject = remoteStream;
         
-        // Apply local volume and deafen settings
-        const userVol = localUserVolumes.get(call.peer) ?? 1.0;
-        audio.volume = isDeafened ? 0 : userVol;
+        // Route remote stream through Web Audio GainNode for clean volume boosting (up to 300%)
+        try {
+            const ctx = getRemoteAudioContext();
+            
+            // Clean up existing nodes for this peer if any (e.g. on stream update/re-connection)
+            if (remoteGainNodes.has(call.peer)) {
+                try { remoteGainNodes.get(call.peer).disconnect(); } catch(e){}
+                remoteGainNodes.delete(call.peer);
+            }
+            if (remoteSources.has(call.peer)) {
+                try { remoteSources.get(call.peer).disconnect(); } catch(e){}
+                remoteSources.delete(call.peer);
+            }
+            
+            const source = ctx.createMediaStreamSource(remoteStream);
+            const gainNode = ctx.createGain();
+            
+            const userVol = localUserVolumes.get(call.peer) ?? 1.0;
+            gainNode.gain.value = isDeafened ? 0 : userVol;
+            
+            source.connect(gainNode);
+            gainNode.connect(ctx.destination);
+            
+            remoteSources.set(call.peer, source);
+            remoteGainNodes.set(call.peer, gainNode);
+        } catch (err) {
+            console.error('[Web Audio] Uzak ses yönlendirilemedi, normale dönülüyor:', err);
+            audio.muted = false; // Fallback: play directly through audio element
+            const userVol = localUserVolumes.get(call.peer) ?? 1.0;
+            audio.volume = isDeafened ? 0 : Math.min(1.0, userVol);
+        }
     });
+    
     call.on('close', () => {
         mediaConnections.delete(call.peer);
         const audio = document.getElementById(`audio-${call.peer}`);
         if(audio) audio.remove();
+        
+        // Clean up Web Audio peer nodes
+        if (remoteGainNodes.has(call.peer)) {
+            try { remoteGainNodes.get(call.peer).disconnect(); } catch(e){}
+            remoteGainNodes.delete(call.peer);
+        }
+        if (remoteSources.has(call.peer)) {
+            try { remoteSources.get(call.peer).disconnect(); } catch(e){}
+            remoteSources.delete(call.peer);
+        }
     });
 }
 
@@ -806,9 +876,36 @@ window.adjustUserVolume = function(peerId, value) {
     localUserVolumes.set(peerId, volume);
     localStorage.setItem('os_volumes', JSON.stringify(Array.from(localUserVolumes.entries())));
     
+    // Set volume on remote Web Audio GainNode
+    const gainNode = remoteGainNodes.get(peerId);
+    if (gainNode) {
+        gainNode.gain.value = isDeafened ? 0 : volume;
+    }
+    
+    // Fallback for standard audio element volume (clamp between 0 and 1)
     const audio = document.getElementById(`audio-${peerId}`);
     if (audio) {
-        audio.volume = isDeafened ? 0 : volume;
+        audio.volume = isDeafened ? 0 : Math.min(1.0, volume);
+    }
+    
+    // Update dynamic UI slider percentage text and icon
+    const volText = document.getElementById(`vol-text-${peerId}`);
+    if (volText) {
+        volText.textContent = Math.round(volume * 100) + '%';
+    }
+    
+    const volIcon = document.getElementById(`vol-icon-${peerId}`);
+    if (volIcon) {
+        volIcon.className = '';
+        if (volume === 0 || isDeafened) {
+            volIcon.className = 'fa-solid fa-volume-xmark text-[10px] text-red-500/80';
+        } else if (volume < 0.5) {
+            volIcon.className = 'fa-solid fa-volume-off text-[10px] text-[#555]';
+        } else if (volume < 1.5) {
+            volIcon.className = 'fa-solid fa-volume-low text-[10px] text-[#555]';
+        } else {
+            volIcon.className = 'fa-solid fa-volume-high text-[10px] text-blue-500';
+        }
     }
 };
 
@@ -841,6 +938,16 @@ function renderChannelPanel() {
                 usersInChannel.forEach(u => {
                     const isMe = u.id === myId;
                     const volume = localUserVolumes.get(u.id) ?? 1.0;
+                    
+                    let initialIcon = 'fa-solid fa-volume-low text-[10px] text-[#555]';
+                    if (volume === 0 || isDeafened) {
+                        initialIcon = 'fa-solid fa-volume-xmark text-[10px] text-red-500/80';
+                    } else if (volume < 0.5) {
+                        initialIcon = 'fa-solid fa-volume-off text-[10px] text-[#555]';
+                    } else if (volume >= 1.5) {
+                        initialIcon = 'fa-solid fa-volume-high text-[10px] text-blue-500';
+                    }
+
                     usersDiv.innerHTML += `
                         <div class="flex items-center justify-between text-[12px] text-[#888] group/voice-user py-0.5 select-none">
                             <div class="flex items-center min-w-0 flex-1">
@@ -849,10 +956,11 @@ function renderChannelPanel() {
                             </div>
                             ${!isMe ? `
                             <div class="flex items-center gap-1.5 opacity-0 group-hover/voice-user:opacity-100 transition-all ml-2 shrink-0 pr-1">
-                                <i class="fa-solid fa-volume-low text-[10px] text-[#555]"></i>
-                                <input type="range" min="0" max="2" step="0.1" value="${volume}" 
-                                       class="w-12 h-1 bg-[#222] rounded-lg appearance-none cursor-pointer accent-blue-500 hover:accent-blue-400" 
+                                <i class="${initialIcon}" id="vol-icon-${u.id}"></i>
+                                <input type="range" min="0" max="5" step="0.1" value="${volume}" 
+                                       class="w-14 h-1 bg-[#222] rounded-lg appearance-none cursor-pointer accent-blue-500 hover:accent-blue-400" 
                                        oninput="adjustUserVolume('${u.id}', this.value)" title="Ses Seviyesi">
+                                <span class="text-[9px] font-mono text-slate-500 min-w-[28px] text-right" id="vol-text-${u.id}">${Math.round(volume * 100)}%</span>
                             </div>
                             ` : ''}
                         </div>
@@ -1187,10 +1295,31 @@ function toggleMute() {
 function toggleDeafen() {
     isDeafened = !isDeafened;
     
+    // Update remote Web Audio gains
+    remoteGainNodes.forEach((gainNode, peerId) => {
+        const targetVolume = localUserVolumes.get(peerId) ?? 1.0;
+        gainNode.gain.value = isDeafened ? 0 : targetVolume;
+        
+        // Update icons dynamically
+        const volIcon = document.getElementById(`vol-icon-${peerId}`);
+        if (volIcon) {
+            volIcon.className = '';
+            if (isDeafened || targetVolume === 0) {
+                volIcon.className = 'fa-solid fa-volume-xmark text-[10px] text-red-500/80';
+            } else if (targetVolume < 0.5) {
+                volIcon.className = 'fa-solid fa-volume-off text-[10px] text-[#555]';
+            } else if (targetVolume < 1.5) {
+                volIcon.className = 'fa-solid fa-volume-low text-[10px] text-[#555]';
+            } else {
+                volIcon.className = 'fa-solid fa-volume-high text-[10px] text-blue-500';
+            }
+        }
+    });
+    
     remoteAudiosContainer.querySelectorAll('audio').forEach(audio => {
         const peerId = audio.id.replace('audio-', '');
         const targetVolume = localUserVolumes.get(peerId) ?? 1.0;
-        audio.volume = isDeafened ? 0 : targetVolume;
+        audio.volume = isDeafened ? 0 : Math.min(1.0, targetVolume);
     });
     
     if (isDeafened) {
