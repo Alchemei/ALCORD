@@ -4,11 +4,15 @@
   "description": "Özgür Sohbet - P2P Masaüstü İletişim Uygulaması",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "web": "node server.js"
   },
   "author": "",
   "license": "ISC",
   "devDependencies": {
     "electron": "^42.1.0"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
   }
 }
