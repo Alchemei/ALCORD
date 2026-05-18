@@ -186,6 +186,19 @@ ipcMain.on('register-hotkeys', (event, { hotkeyMic, hotkeyDeafen }) => {
   });
 });
 
+// Screen share capture sources handler
+ipcMain.handle('get-screen-sources', async () => {
+  const sources = await desktopCapturer.getSources({ 
+    types: ['window', 'screen'], 
+    thumbnailSize: { width: 300, height: 200 } 
+  });
+  return sources.map(source => ({
+    id: source.id,
+    name: source.name,
+    thumbnail: source.thumbnail.toDataURL()
+  }));
+});
+
 app.whenReady().then(() => {
   createWindow();
   createTray();

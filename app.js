@@ -524,7 +524,7 @@ function leaveVoiceChannel() {
     playTone('leave');
 }
 
-async function startScreenShare() {
+async function startScreenShare(sourceId = null) {
     if (!activeVoiceChannelId) return;
     if (localScreenStream) {
         stopScreenShare();
@@ -532,10 +532,26 @@ async function startScreenShare() {
     }
     
     try {
-        localScreenStream = await navigator.mediaDevices.getDisplayMedia({
-            video: { cursor: "always" },
-            audio: false
-        });
+        if (sourceId) {
+            localScreenStream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: {
+                    mandatory: {
+                        chromeMediaSource: 'desktop',
+                        chromeMediaSourceId: sourceId,
+                        minWidth: 1280,
+                        maxWidth: 1920,
+                        minHeight: 720,
+                        maxHeight: 1080
+                    }
+                }
+            });
+        } else {
+            localScreenStream = await navigator.mediaDevices.getDisplayMedia({
+                video: { cursor: "always" },
+                audio: false
+            });
+        }
         
         localScreenStream.getVideoTracks()[0].onended = () => {
             stopScreenShare();
@@ -1082,7 +1098,7 @@ settingsGainSlider.addEventListener('input', (e) => {
 disconnectVoiceBtn.addEventListener('click', leaveVoiceChannel);
 
 shareScreenBtn.addEventListener('click', () => {
-    startScreenShare();
+    openScreenPicker();
 });
 
 closeScreenShareBtn.addEventListener('click', () => {
@@ -1389,3 +1405,129 @@ function closeImageViewerModal() {
 // Bind to window for dynamic HTML element onclick triggers
 window.openImageModal = openImageModal;
 window.closeImageViewerModal = closeImageViewerModal;
+
+// ---------------- CUSTOM ELECTRON SCREEN & WINDOW PICKER ----------------
+let screenPickerSources = [];
+let selectedSourceId = null;
+let currentPickerTab = 'screen'; // 'screen' or 'window'
+
+async function openScreenPicker() {
+    if (localScreenStream) {
+        stopScreenShare();
+        return;
+    }
+    
+    if (!window.process || !window.process.type) {
+        // Fallback for non-Electron environment
+        startScreenShare();
+        return;
+    }
+
+    const { ipcRenderer } = window.require('electron');
+    showToast('Ekran kaynakları aranıyor...', 'info');
+    
+    try {
+        screenPickerSources = await ipcRenderer.invoke('get-screen-sources');
+        selectedSourceId = null;
+        currentPickerTab = 'screen';
+        
+        // Update tab styles
+        const tabScreens = document.getElementById('tabScreens');
+        const tabWindows = document.getElementById('tabWindows');
+        tabScreens.className = "py-3.5 px-4 text-[11px] font-semibold uppercase tracking-wider text-blue-500 border-b-2 border-blue-500 mr-4 focus:outline-none transition-all";
+        tabWindows.className = "py-3.5 px-4 text-[11px] font-semibold uppercase tracking-wider text-slate-400 hover:text-slate-200 focus:outline-none transition-all";
+        
+        document.getElementById('confirmScreenPickerBtn').setAttribute('disabled', 'true');
+        
+        openModal('screenPickerModal');
+        renderPickerSources();
+    } catch(e) {
+        console.error('Failed to get screen sources:', e);
+        showToast('Kaynaklar yüklenemedi, varsayılan paylaşım deneniyor...', 'error');
+        startScreenShare();
+    }
+}
+
+function renderPickerSources() {
+    const listContainer = document.getElementById('pickerSourcesList');
+    const confirmBtn = document.getElementById('confirmScreenPickerBtn');
+    listContainer.innerHTML = '';
+    
+    const filtered = screenPickerSources.filter(s => {
+        if (currentPickerTab === 'screen') {
+            return s.id.startsWith('screen');
+        } else {
+            return s.id.startsWith('window');
+        }
+    });
+
+    if (filtered.length === 0) {
+        listContainer.innerHTML = `
+            <div class="col-span-2 flex flex-col items-center justify-center py-12 text-slate-500">
+                <i class="fa-solid fa-circle-info text-2xl mb-3"></i>
+                <span class="text-xs">Aktif kaynak bulunamadı.</span>
+            </div>
+        `;
+        return;
+    }
+
+    filtered.forEach(source => {
+        const card = document.createElement('div');
+        const isSelected = selectedSourceId === source.id;
+        card.className = `group relative rounded-xl border overflow-hidden bg-black/40 cursor-pointer transition-all ${
+            isSelected 
+                ? 'border-blue-500 ring-2 ring-blue-500/25 bg-blue-950/20' 
+                : 'border-white/[0.05] hover:border-white/[0.15] hover:bg-white/[0.01]'
+        }`;
+        
+        card.innerHTML = `
+            <div class="aspect-video w-full overflow-hidden bg-slate-950/40 relative flex items-center justify-center">
+                <img src="${source.thumbnail}" class="w-full h-full object-contain group-hover:scale-[1.02] transition-transform duration-300">
+                ${isSelected ? `
+                    <div class="absolute inset-0 bg-blue-600/10 flex items-center justify-center">
+                        <div class="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center shadow-lg">
+                            <i class="fa-solid fa-check text-xs"></i>
+                        </div>
+                    </div>
+                ` : ''}
+            </div>
+            <div class="p-3 border-t border-white/[0.03] flex items-center gap-2">
+                <i class="${currentPickerTab === 'screen' ? 'fa-solid fa-desktop' : 'fa-regular fa-window-maximize'} text-[11px] text-slate-400"></i>
+                <span class="text-xs text-slate-200 truncate font-medium flex-1">${source.name}</span>
+            </div>
+        `;
+
+        card.addEventListener('click', () => {
+            selectedSourceId = source.id;
+            confirmBtn.removeAttribute('disabled');
+            renderPickerSources();
+        });
+
+        listContainer.appendChild(card);
+    });
+}
+
+// Attach Screen Picker Listeners
+document.getElementById('closeScreenPickerBtn').addEventListener('click', () => closeModal('screenPickerModal'));
+document.getElementById('cancelScreenPickerBtn').addEventListener('click', () => closeModal('screenPickerModal'));
+
+document.getElementById('tabScreens').addEventListener('click', () => {
+    currentPickerTab = 'screen';
+    document.getElementById('tabScreens').className = "py-3.5 px-4 text-[11px] font-semibold uppercase tracking-wider text-blue-500 border-b-2 border-blue-500 mr-4 focus:outline-none transition-all";
+    document.getElementById('tabWindows').className = "py-3.5 px-4 text-[11px] font-semibold uppercase tracking-wider text-slate-400 hover:text-slate-200 focus:outline-none transition-all";
+    renderPickerSources();
+});
+
+document.getElementById('tabWindows').addEventListener('click', () => {
+    currentPickerTab = 'window';
+    document.getElementById('tabScreens').className = "py-3.5 px-4 text-[11px] font-semibold uppercase tracking-wider text-slate-400 hover:text-slate-200 mr-4 focus:outline-none transition-all";
+    document.getElementById('tabWindows').className = "py-3.5 px-4 text-[11px] font-semibold uppercase tracking-wider text-blue-500 border-b-2 border-blue-500 focus:outline-none transition-all";
+    renderPickerSources();
+});
+
+document.getElementById('confirmScreenPickerBtn').addEventListener('click', () => {
+    if (selectedSourceId) {
+        closeModal('screenPickerModal');
+        startScreenShare(selectedSourceId);
+    }
+});
