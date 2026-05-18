@@ -8,6 +8,8 @@ const addServerBtn = document.getElementById('addServerBtn');
 const goHomeBtn = document.getElementById('goHomeBtn');
 
 const homePanel = document.getElementById('homePanel');
+const homeServerListContainer = document.getElementById('homeServerListContainer');
+const homeServerList = document.getElementById('homeServerList');
 const channelPanel = document.getElementById('channelPanel');
 const textChannelsList = document.getElementById('textChannelsList');
 const voiceChannelsList = document.getElementById('voiceChannelsList');
@@ -237,6 +239,16 @@ function initApp() {
         showToast('Bağlantı koptu, tekrar deneniyor...', 'warning');
         peer.reconnect();
     });
+
+    peer.on('error', (err) => {
+        console.error('PeerJS Hatası:', err);
+        if (err.type === 'peer-not-found' || err.type === 'unavailable-id') {
+            showToast('Bağlantı başarısız: Hedef ağ bulunamadı veya çevrimdışı.', 'error');
+            renderHome();
+        } else {
+            showToast('Ağ hatası: ' + err.message, 'error');
+        }
+    });
 }
 
 function saveJoinedServers() {
@@ -391,6 +403,12 @@ function joinServer(hostId) {
             showToast(data.message, 'error');
             renderHome();
         }
+    });
+
+    hostConnection.on('error', (err) => {
+        console.error('Ağ bağlantı hatası:', err);
+        showToast('Ağ bağlantısı kurulamadı veya koptu.', 'error');
+        renderHome();
     });
 
     hostConnection.on('close', () => {
@@ -644,6 +662,7 @@ function switchServer(id) {
 
 function renderJoinedServersList() {
     serverList.innerHTML = '';
+    homeServerList.innerHTML = '';
     
     if (joinedServers.length === 0) {
         serverList.innerHTML = `
@@ -651,11 +670,18 @@ function renderJoinedServersList() {
                 Henüz bir ağa katılmadınız.
             </div>
         `;
+        homeServerListContainer.classList.add('hidden');
+        homeServerListContainer.classList.remove('flex');
         return;
     }
     
+    homeServerListContainer.classList.remove('hidden');
+    homeServerListContainer.classList.add('flex');
+    
     joinedServers.forEach(srv => {
         const isActive = currentServerId === srv.id;
+        
+        // 1. Dropdown Menü Listesi
         const btn = document.createElement('button');
         btn.className = `w-full flex items-center px-3 py-2 rounded-lg text-left transition-colors text-[13px] group/srv ${
             isActive 
@@ -678,6 +704,32 @@ function renderJoinedServersList() {
         }
         
         serverList.appendChild(btn);
+
+        // 2. Ana Sayfa Hızlı Erişim Kartları
+        const card = document.createElement('div');
+        card.className = `glass-modal border border-white/[0.04] rounded-xl p-4 flex items-center justify-between hover:bg-white/[0.015] hover:scale-[1.01] transition-all cursor-pointer group`;
+        
+        card.innerHTML = `
+            <div class="flex items-center min-w-0 mr-4">
+                <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-purple-600 to-blue-500 flex items-center justify-center text-[13px] font-bold mr-4 shadow-[0_0_15px_rgba(147,51,234,0.3)] shrink-0">${srv.name.substring(0,1).toUpperCase()}</div>
+                <div class="min-w-0 flex flex-col text-left">
+                    <span class="text-white text-[13px] font-semibold truncate">${srv.name}</span>
+                    <span class="text-[#555] text-[10px] font-mono mt-0.5 truncate select-all">${srv.id}</span>
+                </div>
+            </div>
+            <div class="flex items-center gap-2">
+                ${isActive 
+                    ? '<span class="text-[11px] font-medium text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-md flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Bağlı</span>'
+                    : '<button class="text-[11px] text-blue-400 group-hover:text-blue-300 font-semibold bg-blue-500/10 group-hover:bg-blue-500/20 border border-blue-500/10 px-3 py-1 rounded-lg transition-colors">Bağlan</button>'
+                }
+            </div>
+        `;
+        
+        if (!isActive) {
+            card.onclick = () => switchServer(srv.id);
+        }
+        
+        homeServerList.appendChild(card);
     });
 }
 

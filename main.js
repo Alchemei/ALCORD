@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, session, desktopCapturer } = require('electron');
 const path = require('path');
 
 function createWindow () {
@@ -14,6 +14,20 @@ function createWindow () {
       nodeIntegration: true, // HTML içinden require('electron') kullanımına izin verir
       contextIsolation: false
     }
+  });
+
+  // Ekran Paylaşım İsteklerini Yakalayıp Ana Ekranı Otomatik Seçelim
+  session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+    desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
+      if (sources.length > 0) {
+        callback({ video: sources[0] });
+      } else {
+        callback(new Error('Ekran kaynağı bulunamadı.'));
+      }
+    }).catch((err) => {
+      console.error(err);
+      callback(err);
+    });
   });
 
   mainWindow.loadFile('index.html');
