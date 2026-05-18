@@ -1,3 +1,9 @@
 node_modules/
-.DS_Store
+ALCORD-win32-x64/
+dist/
 *.log
+.tempmediaStorage/
+.git/
+.DS_Store
+*.exe
+!dist/ALCORD_Setup.exe
