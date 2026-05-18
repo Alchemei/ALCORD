@@ -281,7 +281,25 @@
                 </div>
                 
                 <!-- Voice Controls -->
-                <div id="voiceControls" class="flex items-center gap-4 hidden">
+                <div id="voiceControls" class="flex items-center gap-3 hidden">
+                    
+                    <!-- Ses Ayarları Dropdown -->
+                    <div class="relative group">
+                        <button class="w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center text-slate-300 transition-colors backdrop-blur-md" title="Ses Ayarları">
+                            <i class="fa-solid fa-sliders text-sm"></i>
+                        </button>
+                        <div class="absolute top-full right-0 mt-3 w-56 p-4 glass-card rounded-xl shadow-2xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 border border-white/10">
+                            <label class="flex items-center justify-between text-xs font-semibold text-slate-200 mb-4 cursor-pointer">
+                                <span>Yapay Zeka Gürültü Engelleyici</span>
+                                <input type="checkbox" id="noiseSuppressionToggle" checked class="accent-brand w-4 h-4 cursor-pointer">
+                            </label>
+                            <label class="text-xs font-semibold text-slate-200 flex flex-col gap-2 cursor-pointer">
+                                <span>Mikrofon Sesi (Kazanç)</span>
+                                <input type="range" id="micGainSlider" min="0.5" max="3" step="0.1" value="1" class="w-full accent-brand cursor-pointer">
+                            </label>
+                        </div>
+                    </div>
+
                     <div id="voiceStatusIndicator" class="hidden items-center px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-bold uppercase tracking-wider animate-blink">
                         <i class="fa-solid fa-waveform mr-2"></i> Ses Aktif
                     </div>
@@ -362,6 +380,8 @@
         const voiceStatusIndicator = document.getElementById('voiceStatusIndicator');
         const remoteAudio = document.getElementById('remoteAudio');
         const toastContainer = document.getElementById('toastContainer');
+        const noiseSuppressionToggle = document.getElementById('noiseSuppressionToggle');
+        const micGainSlider = document.getElementById('micGainSlider');
 
         let peer = null;
         let myId = '';
@@ -374,71 +394,85 @@
         let activeMediaConn = null;
         let localStream = null;
         let activeAudioCtx = null;
+        let micGainNode = null;
+        let activeRnnoiseNode = null;
+        let rnnoiseWasmBinary = null; // Ön-yüklenmiş WASM binary
+        let rnnoiseReady = false;
 
-        // Profesyonel Mikrofon Temizleyici (Noise Gate & Bandpass Filter)
-        function applyAudioProcessing(stream) {
+        // RNNoise YZ Gürültü Engelleyicisini Ön-Yükle
+        async function preloadRNNoise() {
+            try {
+                // WASM dosyasını ön-yükle
+                const wasmResponse = await fetch('rnnoise.wasm');
+                rnnoiseWasmBinary = await wasmResponse.arrayBuffer();
+                console.log('[RNNoise] WASM binary yüklendi (' + rnnoiseWasmBinary.byteLength + ' bytes)');
+                rnnoiseReady = true;
+            } catch(e) {
+                console.error('[RNNoise] WASM yüklenemedi:', e);
+                rnnoiseReady = false;
+            }
+        }
+        preloadRNNoise();
+
+        // RNNoise Yapay Zeka Ses İşleyicisi
+        async function applyRNNoiseProcessing(stream) {
             const AudioContext = window.AudioContext || window.webkitAudioContext;
-            const audioCtx = new AudioContext();
+            const audioCtx = new AudioContext({ sampleRate: 48000 }); // RNNoise 48kHz gerektirir
             const source = audioCtx.createMediaStreamSource(stream);
             
-            // 1. High-pass: Dip sesi (klima, fan, motor) keser (< 100Hz)
-            const highpass = audioCtx.createBiquadFilter();
-            highpass.type = 'highpass';
-            highpass.frequency.value = 100;
-            
-            // 2. Low-pass: Keskin klavye çınlamalarını ve tıslama seslerini yumuşatır (> 4000Hz)
-            const lowpass = audioCtx.createBiquadFilter();
-            lowpass.type = 'lowpass';
-            lowpass.frequency.value = 4000;
-            
-            // 3. Noise Gate (Gürültü Kapısı): Sadece konuşurken mikrofonu açar
-            const gainNode = audioCtx.createGain();
-            gainNode.gain.value = 0; // Başlangıçta sessiz
-
-            const processor = audioCtx.createScriptProcessor(2048, 1, 1);
-            
-            source.connect(highpass);
-            highpass.connect(lowpass);
-            
-            lowpass.connect(gainNode);
-            lowpass.connect(processor);
-            
-            // Arka planda çalışması için sahte bir çıkışa bağlamalıyız
-            const dummyGain = audioCtx.createGain();
-            dummyGain.gain.value = 0;
-            processor.connect(dummyGain);
-            dummyGain.connect(audioCtx.destination);
+            // Mikrofon Kazanç Kontrolü
+            micGainNode = audioCtx.createGain();
+            micGainNode.gain.value = parseFloat(micGainSlider.value);
             
             const destination = audioCtx.createMediaStreamDestination();
-            gainNode.connect(destination);
             
-            const NOISE_THRESHOLD = 0.015; // Hassasiyet (0.01 - 0.05 arası idealdir)
-            let holdTime = 0;
-            
-            processor.onaudioprocess = function(e) {
-                const input = e.inputBuffer.getChannelData(0);
-                let sumSquares = 0;
-                for (let i = 0; i < input.length; i++) {
-                    sumSquares += input[i] * input[i];
+            if (rnnoiseReady && noiseSuppressionToggle.checked) {
+                try {
+                    // AudioWorklet modülünü yükle
+                    await audioCtx.audioWorklet.addModule('rnnoise-processor.js');
+                    
+                    // RNNoise AudioWorkletNode oluştur
+                    activeRnnoiseNode = new AudioWorkletNode(
+                        audioCtx, 
+                        '@sapphi-red/web-noise-suppressor/rnnoise',
+                        { processorOptions: { maxChannels: 1, wasmBinary: rnnoiseWasmBinary } }
+                    );
+                    
+                    // Ses yolu: Mikrofon -> Kazanç -> RNNoise YZ -> Çıkış
+                    source.connect(micGainNode);
+                    micGainNode.connect(activeRnnoiseNode);
+                    activeRnnoiseNode.connect(destination);
+                    
+                    console.log('[RNNoise] YZ gürültü engelleyici AKTIF');
+                    showToast('YZ Gürültü Engelleyici aktif ✨', 'success');
+                } catch(e) {
+                    console.error('[RNNoise] Worklet hatası, bypass moduna geçiliyor:', e);
+                    // Hata durumunda direkt bağla
+                    source.connect(micGainNode);
+                    micGainNode.connect(destination);
+                    showToast('YZ filtresi yüklenemedi, ham ses kullanılıyor', 'warning');
                 }
-                const rms = Math.sqrt(sumSquares / input.length);
-                
-                if (rms > NOISE_THRESHOLD) {
-                    holdTime = 30; // Konuşma bitse de 30 frame daha açık tut (kesikliği önler)
-                } else {
-                    if (holdTime > 0) holdTime--;
-                }
-                
-                // Patlama olmaması için sesi yumuşak (smooth) şekilde aç/kapat
-                const targetGain = holdTime > 0 ? 1 : 0;
-                gainNode.gain.setTargetAtTime(targetGain, audioCtx.currentTime, 0.1);
-            };
+            } else {
+                // RNNoise kapalı veya hazır değil - direkt bağla
+                source.connect(micGainNode);
+                micGainNode.connect(destination);
+            }
             
             return {
                 processedStream: destination.stream,
                 audioCtx: audioCtx
             };
         }
+
+        micGainSlider.addEventListener('input', () => {
+            if(micGainNode) {
+                micGainNode.gain.value = parseFloat(micGainSlider.value);
+            }
+        });
+
+        noiseSuppressionToggle.addEventListener('change', () => {
+            showToast(`YZ Gürültü Engelleyici ${noiseSuppressionToggle.checked ? 'AÇIK - Sonraki aramada aktif olacak' : 'KAPALI'}`, 'brand');
+        });
 
         function savePeers() {
             const peersArray = Array.from(connections.keys());
@@ -533,15 +567,15 @@
                     video: false, 
                     audio: {
                         echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true
+                        noiseSuppression: false, // RNNoise bunu yapacak
+                        autoGainControl: false
                     } 
                 })
-                    .then((stream) => {
+                    .then(async (stream) => {
                         localStream = stream;
                         
-                        // Temizleme filtresini uygula
-                        const { processedStream, audioCtx } = applyAudioProcessing(stream);
+                        // RNNoise YZ filtresini uygula
+                        const { processedStream, audioCtx } = await applyRNNoiseProcessing(stream);
                         activeAudioCtx = audioCtx;
                         
                         call.answer(processedStream);
@@ -738,15 +772,15 @@
                 video: false, 
                 audio: {
                     echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true
+                    noiseSuppression: false,
+                    autoGainControl: false
                 } 
             })
-                .then((stream) => {
+                .then(async (stream) => {
                     localStream = stream;
                     
-                    // Temizleme filtresini uygula
-                    const { processedStream, audioCtx } = applyAudioProcessing(stream);
+                    // RNNoise YZ filtresini uygula
+                    const { processedStream, audioCtx } = await applyRNNoiseProcessing(stream);
                     activeAudioCtx = audioCtx;
                     
                     showToast('Arama yapılıyor...', 'brand');
@@ -847,10 +881,16 @@
                 localStream.getTracks().forEach(track => track.stop());
                 localStream = null;
             }
+            if(activeRnnoiseNode) {
+                activeRnnoiseNode.port.postMessage('destroy');
+                activeRnnoiseNode.disconnect();
+                activeRnnoiseNode = null;
+            }
             if(activeAudioCtx) {
                 activeAudioCtx.close();
                 activeAudioCtx = null;
             }
+            micGainNode = null;
             activeMediaConn = null;
             remoteAudio.srcObject = null;
             showVoiceCallUI(false);

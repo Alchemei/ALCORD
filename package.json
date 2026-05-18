@@ -13,6 +13,7 @@
     "electron": "^42.1.0"
   },
   "dependencies": {
+    "@sapphi-red/web-noise-suppressor": "^0.3.5",
     "express": "^5.2.1"
   }
 }
