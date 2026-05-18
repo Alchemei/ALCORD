@@ -1167,24 +1167,7 @@ function matchesHotkey(e, hotkey) {
     return keyMatch && altMatch && ctrlMatch && shiftMatch;
 }
 
-window.addEventListener('keydown', (e) => {
-    // Skip hotkeys if user is actively writing a message or typing in any input
-    if (document.activeElement && (
-        document.activeElement.tagName === 'INPUT' || 
-        document.activeElement.tagName === 'TEXTAREA' || 
-        document.activeElement.isContentEditable
-    )) {
-        return;
-    }
-    
-    if (matchesHotkey(e, hotkeyMic)) {
-        e.preventDefault();
-        toggleMute();
-    } else if (matchesHotkey(e, hotkeyDeafen)) {
-        e.preventDefault();
-        toggleDeafen();
-    }
-});
+// Global hotkeys are now fully handled by the C# native global hook to prevent duplicates.
 
 function convertToAccelerator(hotkey) {
     if (!hotkey || !hotkey.key) return null;
@@ -1244,20 +1227,30 @@ function initElectronTitleBar() {
 
             // Global Hotkeys IPC Listeners
             ipcRenderer.on('toggle-mute-global', () => {
+                // If user is actively typing in a text field inside ALCORD, ignore the global shortcut trigger
+                if (document.hasFocus() && document.activeElement && (
+                    document.activeElement.tagName === 'INPUT' || 
+                    document.activeElement.tagName === 'TEXTAREA' || 
+                    document.activeElement.isContentEditable
+                )) {
+                    return;
+                }
                 toggleMute();
             });
             ipcRenderer.on('toggle-deafen-global', () => {
+                // If user is actively typing in a text field inside ALCORD, ignore the global shortcut trigger
+                if (document.hasFocus() && document.activeElement && (
+                    document.activeElement.tagName === 'INPUT' || 
+                    document.activeElement.tagName === 'TEXTAREA' || 
+                    document.activeElement.isContentEditable
+                )) {
+                    return;
+                }
                 toggleDeafen();
             });
 
             ipcRenderer.on('hotkey-register-status', (event, status) => {
                 console.log('Hotkey register status report:', status);
-                if (status.mic.shortcut && !status.mic.success) {
-                    showToast(`Susturma global kısayolu (${status.mic.shortcut}) kaydedilemedi. Harf tuşlarında Ctrl, Alt veya Shift birleşimini kullanmalısınız.`, 'error');
-                }
-                if (status.deafen.shortcut && !status.deafen.success) {
-                    showToast(`Sağırlaştırma global kısayolu (${status.deafen.shortcut}) kaydedilemedi. Harf tuşlarında Ctrl, Alt veya Shift birleşimini kullanmalısınız.`, 'error');
-                }
             });
         } catch(e) {
             console.error('Electron IPC bind error:', e);
