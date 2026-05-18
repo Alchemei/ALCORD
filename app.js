@@ -198,6 +198,7 @@ function initApp() {
     // Update tooltip titles dynamically
     micToggleBtn.title = `Sustur (${formatHotkey(hotkeyMic)})`;
     deafenToggleBtn.title = `Sağırlaştır (${formatHotkey(hotkeyDeafen)})`;
+    syncGlobalShortcuts();
 
     // Mute/Deafen buttons click handlers
     micToggleBtn.addEventListener('click', toggleMute);
@@ -1024,6 +1025,7 @@ saveSettingsBtn.addEventListener('click', () => {
         localStorage.setItem('os_hotkey_deafen_obj', JSON.stringify(hotkeyDeafen));
         deafenToggleBtn.title = `Sağırlaştır (${formatHotkey(hotkeyDeafen)})`;
     }
+    syncGlobalShortcuts();
 
     if(micGainNode) micGainNode.gain.value = parseFloat(settingsGainSlider.value);
     closeModal('settingsModal');
@@ -1182,6 +1184,54 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
+function convertToAccelerator(hotkey) {
+    if (!hotkey || !hotkey.key) return null;
+    let parts = [];
+    if (hotkey.ctrlKey) parts.push('Ctrl');
+    if (hotkey.altKey) parts.push('Alt');
+    if (hotkey.shiftKey) parts.push('Shift');
+    
+    let keyName = hotkey.key;
+    // Map standard DOM keys to Electron accelerators
+    if (keyName === ' ') keyName = 'Space';
+    else if (keyName === 'Control') return null;
+    else if (keyName === 'Alt') return null;
+    else if (keyName === 'Shift') return null;
+    else if (keyName === 'Meta') return null;
+    else if (keyName === 'Pause') keyName = 'Pause';
+    else if (keyName === 'ScrollLock') keyName = 'ScrollLock';
+    else if (keyName === 'PrintScreen') keyName = 'PrintScreen';
+    else if (keyName === 'CapsLock') keyName = 'Capslock';
+    else if (keyName === 'NumLock') keyName = 'Numlock';
+    else if (keyName === 'Insert') keyName = 'Insert';
+    else if (keyName === 'Delete') keyName = 'Delete';
+    else if (keyName === 'Home') keyName = 'Home';
+    else if (keyName === 'End') keyName = 'End';
+    else if (keyName === 'PageUp') keyName = 'PageUp';
+    else if (keyName === 'PageDown') keyName = 'PageDown';
+    else if (keyName === 'ArrowUp') keyName = 'Up';
+    else if (keyName === 'ArrowDown') keyName = 'Down';
+    else if (keyName === 'ArrowLeft') keyName = 'Left';
+    else if (keyName === 'ArrowRight') keyName = 'Right';
+    else if (keyName.length === 1) keyName = keyName.toUpperCase();
+    
+    parts.push(keyName);
+    return parts.join('+');
+}
+
+function syncGlobalShortcuts() {
+    if (window.process && window.process.type) {
+        try {
+            const { ipcRenderer } = window.require('electron');
+            const micShortcut = convertToAccelerator(hotkeyMic);
+            const deafenShortcut = convertToAccelerator(hotkeyDeafen);
+            ipcRenderer.send('register-hotkeys', { micShortcut, deafenShortcut });
+        } catch (e) {
+            console.error('Failed to sync global shortcuts:', e);
+        }
+    }
+}
+
 function initElectronTitleBar() {
     const customTitleBar = document.getElementById('customTitleBar');
     if (window.process && window.process.type) {
@@ -1191,6 +1241,14 @@ function initElectronTitleBar() {
             document.getElementById('minBtn').addEventListener('click', () => ipcRenderer.send('window-min'));
             document.getElementById('maxBtn').addEventListener('click', () => ipcRenderer.send('window-max'));
             document.getElementById('closeBtn').addEventListener('click', () => ipcRenderer.send('window-close'));
+
+            // Global Hotkeys IPC Listeners
+            ipcRenderer.on('toggle-mute-global', () => {
+                toggleMute();
+            });
+            ipcRenderer.on('toggle-deafen-global', () => {
+                toggleDeafen();
+            });
         } catch(e) {
             console.error('Electron IPC bind error:', e);
         }
