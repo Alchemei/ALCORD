@@ -116,9 +116,22 @@ let activeAudioCtx = null;
 
 async function preloadRNNoise() {
     try {
+        if (window.process && window.process.type) {
+            // Electron environment - use safe direct filesystem loading
+            const fs = window.require('fs');
+            const path = window.require('path');
+            const wasmPath = path.join(__dirname, 'rnnoise.wasm');
+            const buffer = fs.readFileSync(wasmPath);
+            rnnoiseWasmBinary = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+            rnnoiseReady = true;
+            console.log('[RNNoise] WASM loaded successfully via Node FS.');
+            return;
+        }
+        
         const wasmResponse = await fetch('rnnoise.wasm');
         rnnoiseWasmBinary = await wasmResponse.arrayBuffer();
         rnnoiseReady = true;
+        console.log('[RNNoise] WASM loaded successfully via Fetch API.');
     } catch(e) {
         console.error('[RNNoise] Yüklenemedi:', e);
         rnnoiseReady = false;
@@ -459,7 +472,20 @@ async function applyRNNoiseProcessing(stream) {
     
     if (rnnoiseReady && settingsNoiseToggle.checked) {
         try {
-            await audioCtx.audioWorklet.addModule('rnnoise-processor.js');
+            let workletUrl = 'rnnoise-processor.js';
+            if (window.process && window.process.type) {
+                // Electron environment: Use Node FS to read processor code, convert to a Blob URL
+                // to bypass Chromium's strict local file:// AudioWorklet loading restriction
+                const fs = window.require('fs');
+                const path = window.require('path');
+                const workletPath = path.join(__dirname, 'rnnoise-processor.js');
+                const code = fs.readFileSync(workletPath, 'utf8');
+                const blob = new Blob([code], { type: 'application/javascript' });
+                workletUrl = URL.createObjectURL(blob);
+                console.log('[RNNoise] Worklet loaded via Blob URL successfully.');
+            }
+            
+            await audioCtx.audioWorklet.addModule(workletUrl);
             activeRnnoiseNode = new AudioWorkletNode(
                 audioCtx, 
                 '@sapphi-red/web-noise-suppressor/rnnoise',
@@ -468,7 +494,9 @@ async function applyRNNoiseProcessing(stream) {
             source.connect(micGainNode);
             micGainNode.connect(activeRnnoiseNode);
             activeRnnoiseNode.connect(destination);
+            console.log('[RNNoise] Noise suppression activated successfully!');
         } catch(e) {
+            console.error('[RNNoise] Worklet or Node failed to activate, falling back to clean mic:', e);
             source.connect(micGainNode);
             micGainNode.connect(destination);
         }
