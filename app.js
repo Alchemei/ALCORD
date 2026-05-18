@@ -51,6 +51,7 @@ const deafenToggleBtn = document.getElementById('deafenToggleBtn');
 const shareScreenBtn = document.getElementById('shareScreenBtn');
 const screenShareContainer = document.getElementById('screenShareContainer');
 const screenShareUser = document.getElementById('screenShareUser');
+const fullscreenScreenShareBtn = document.getElementById('fullscreenScreenShareBtn');
 const closeScreenShareBtn = document.getElementById('closeScreenShareBtn');
 const screenShareVideo = document.getElementById('screenShareVideo');
 
@@ -1049,6 +1050,18 @@ closeScreenShareBtn.addEventListener('click', () => {
         if (activeIncomingScreenCall) {
             activeIncomingScreenCall.close();
             activeIncomingScreenCall = null;
+        }
+    }
+});
+
+fullscreenScreenShareBtn.addEventListener('click', () => {
+    if (screenShareVideo) {
+        if (screenShareVideo.requestFullscreen) {
+            screenShareVideo.requestFullscreen();
+        } else if (screenShareVideo.webkitRequestFullscreen) {
+            screenShareVideo.webkitRequestFullscreen();
+        } else if (screenShareVideo.msRequestFullscreen) {
+            screenShareVideo.msRequestFullscreen();
         }
     }
 });

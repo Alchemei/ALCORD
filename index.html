@@ -321,9 +321,14 @@
                     <span class="w-2 h-2 rounded-full bg-red-500 animate-ping"></span>
                     <span id="screenShareUser">Birisi Ekranını Paylaşıyor</span>
                 </div>
-                <button id="closeScreenShareBtn" class="absolute top-4 right-4 z-10 w-8 h-8 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md flex items-center justify-center text-slate-400 hover:text-white transition-colors" title="Kapat">
-                    <i class="fa-solid fa-xmark text-[14px]"></i>
-                </button>
+                <div class="absolute top-4 right-4 z-10 flex items-center gap-2">
+                    <button id="fullscreenScreenShareBtn" class="w-8 h-8 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md flex items-center justify-center text-slate-400 hover:text-white transition-colors focus:outline-none" title="Tam Ekran">
+                        <i class="fa-solid fa-expand text-[12px]"></i>
+                    </button>
+                    <button id="closeScreenShareBtn" class="w-8 h-8 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md flex items-center justify-center text-slate-400 hover:text-white transition-colors focus:outline-none" title="Kapat">
+                        <i class="fa-solid fa-xmark text-[14px]"></i>
+                    </button>
+                </div>
                 <video id="screenShareVideo" autoplay playsinline class="w-full h-auto max-h-[50vh] object-contain bg-black/40"></video>
             </div>
         </div>
