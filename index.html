@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Özgür Sohbet</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: Outfit -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- PeerJS -->
+    <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Outfit', 'sans-serif'],
+                    },
+                    colors: {
+                        glass: {
+                            100: 'rgba(255, 255, 255, 0.1)',
+                            200: 'rgba(255, 255, 255, 0.05)',
+                            300: 'rgba(0, 0, 0, 0.2)',
+                            400: 'rgba(0, 0, 0, 0.4)',
+                        },
+                        brand: {
+                            light: '#a78bfa',
+                            DEFAULT: '#8b5cf6',
+                            dark: '#7c3aed',
+                        }
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <style>
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+            color: #f8fafc;
+            overflow: hidden;
+        }
+
+        /* Glassmorphism Styles */
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.4);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-right: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+        }
+        
+        .glass-header {
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .glass-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+        }
+
+        .glass-input {
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(4px);
+            transition: all 0.3s ease;
+        }
+        .glass-input:focus {
+            background: rgba(0, 0, 0, 0.3);
+            border-color: rgba(139, 92, 246, 0.5);
+            box-shadow: 0 0 15px rgba(139, 92, 246, 0.2);
+            outline: none;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); }
+
+        /* Animations */
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes slideOut {
+            from { transform: translateX(0); opacity: 1; }
+            to { transform: translateX(100%); opacity: 0; }
+        }
+        .toast-enter { animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        .toast-exit { animation: slideOut 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+        @keyframes blink {
+            0% { opacity: 1; text-shadow: 0 0 8px rgba(34, 197, 94, 0.6); }
+            50% { opacity: 0.5; text-shadow: none; }
+            100% { opacity: 1; text-shadow: 0 0 8px rgba(34, 197, 94, 0.6); }
+        }
+        .animate-blink { animation: blink 1.5s infinite; }
+
+        .chat-container {
+            height: calc(100vh - 32px - 72px - 85px); /* Adjusted for titlebar */
+            overflow-y: auto;
+            scroll-behavior: smooth;
+        }
+        
+        .msg-bubble {
+            max-width: 75%;
+            word-wrap: break-word;
+            backdrop-filter: blur(8px);
+            transition: transform 0.2s ease;
+        }
+        .msg-bubble:hover {
+            transform: scale(1.01);
+        }
+
+        /* Gradient Text */
+        .text-gradient {
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-image: linear-gradient(to right, #a78bfa, #c084fc);
+        }
+        
+        /* Modern Button */
+        .btn-brand {
+            background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+            box-shadow: 0 4px 15px rgba(139, 92, 246, 0.3);
+            transition: all 0.3s ease;
+        }
+        .btn-brand:hover {
+            box-shadow: 0 6px 20px rgba(139, 92, 246, 0.4);
+            transform: translateY(-1px);
+        }
+        .btn-brand:active {
+            transform: translateY(1px);
+        }
+
+        /* Abstract shapes in background */
+        .bg-shape-1 {
+            position: absolute; top: -10%; left: -10%; width: 50vw; height: 50vw;
+            background: radial-gradient(circle, rgba(139,92,246,0.15) 0%, rgba(0,0,0,0) 70%);
+            z-index: -1; pointer-events: none;
+        }
+        .bg-shape-2 {
+            position: absolute; bottom: -20%; right: -10%; width: 60vw; height: 60vw;
+            background: radial-gradient(circle, rgba(192,132,252,0.1) 0%, rgba(0,0,0,0) 70%);
+            z-index: -1; pointer-events: none;
+        }
+        
+        /* Desktop App Draggable Area (Electron) */
+        .drag-area {
+            -webkit-app-region: drag;
+        }
+        .no-drag {
+            -webkit-app-region: no-drag;
+        }
+    </style>
+</head>
+<body class="h-screen w-full flex flex-col overflow-hidden relative">
+    
+    <!-- Custom Title Bar (Only visible in Electron) -->
+    <div id="customTitleBar" class="h-8 w-full flex justify-between items-center bg-transparent z-50 drag-area hidden shrink-0">
+        <div class="px-4 text-[11px] font-semibold text-slate-400 flex items-center tracking-widest uppercase">
+            <i class="fa-solid fa-bolt text-brand-light mr-2"></i> Özgür Sohbet
+        </div>
+        <div class="flex h-full no-drag">
+            <button id="minBtn" class="w-12 h-full flex items-center justify-center text-slate-400 hover:bg-white/10 hover:text-white transition-colors focus:outline-none">
+                <i class="fa-solid fa-minus text-[10px]"></i>
+            </button>
+            <button id="maxBtn" class="w-12 h-full flex items-center justify-center text-slate-400 hover:bg-white/10 hover:text-white transition-colors focus:outline-none">
+                <i class="fa-regular fa-square text-[10px]"></i>
+            </button>
+            <button id="closeBtn" class="w-12 h-full flex items-center justify-center text-slate-400 hover:bg-red-500 hover:text-white transition-colors focus:outline-none">
+                <i class="fa-solid fa-xmark text-[12px]"></i>
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Application Wrapper -->
+    <div class="flex flex-col md:flex-row flex-1 overflow-hidden w-full relative">
+        <!-- Background Abstract Shapes -->
+        <div class="bg-shape-1"></div>
+        <div class="bg-shape-2"></div>
+
+        <!-- Toast Notification Container -->
+        <div id="toastContainer" class="fixed top-12 right-6 z-50 flex flex-col gap-3"></div>
+
+        <!-- Hidden Audio Player -->
+        <audio id="remoteAudio" autoplay class="hidden"></audio>
+
+        <!-- Sidebar / Left Panel -->
+        <div class="w-full md:w-80 glass-panel flex flex-col flex-shrink-0 h-full relative z-10">
+            <!-- Header -->
+            <div class="h-18 flex items-center px-6 py-5 glass-header shrink-0">
+                <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-brand-light to-brand-dark flex items-center justify-center mr-3 shadow-lg shadow-brand/20">
+                    <i class="fa-solid fa-bolt text-white text-sm"></i>
+                </div>
+                <h1 class="text-xl font-bold tracking-wide text-white">Özgür<span class="text-gradient">Sohbet</span></h1>
+            </div>
+            
+            <!-- Profile & Connection -->
+            <div class="p-6 flex-1 overflow-y-auto">
+                
+                <!-- My ID -->
+                <div class="mb-8 glass-card p-5 rounded-2xl border border-brand/20">
+                    <h2 class="text-xs font-semibold text-brand-light uppercase tracking-widest mb-3 flex items-center">
+                        <i class="fa-solid fa-fingerprint mr-2"></i> KİMLİĞİNİZ
+                    </h2>
+                    <div class="flex items-center glass-input rounded-xl overflow-hidden p-1">
+                        <input type="text" id="myIdInput" readonly class="bg-transparent text-white px-3 py-2 w-full text-sm font-mono tracking-wider font-medium outline-none" value="Bağlanıyor...">
+                        <button id="copyIdBtn" class="bg-white/10 hover:bg-white/20 text-white p-2 rounded-lg transition-colors focus:outline-none" title="Kopyala">
+                            <i class="fa-solid fa-copy"></i>
+                        </button>
+                    </div>
+                    <div class="mt-3 flex items-center text-xs px-1">
+                        <div id="statusDot" class="w-2 h-2 rounded-full bg-yellow-400 mr-2 shadow-[0_0_8px_rgba(250,204,21,0.5)]"></div>
+                        <span id="statusText" class="text-slate-300 font-medium">Ağa bağlanıyor...</span>
+                    </div>
+                </div>
+                
+                <!-- Connect -->
+                <div class="mb-8">
+                    <h2 class="text-xs font-semibold text-brand-light uppercase tracking-widest mb-3 flex items-center">
+                        <i class="fa-solid fa-satellite-dish mr-2"></i> BAĞLANTI KUR
+                    </h2>
+                    <div class="flex flex-col gap-3">
+                        <input type="text" id="targetIdInput" placeholder="Arkadaşının ID'sini gir" class="glass-input text-white px-4 py-3 rounded-xl text-sm font-mono tracking-wide placeholder-slate-400">
+                        <button id="connectBtn" class="btn-brand text-white px-4 py-3 rounded-xl font-semibold transition-all w-full flex justify-center items-center">
+                            <i class="fa-solid fa-link mr-2 text-sm"></i> Ağı Başlat
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Connection Status -->
+                <div class="mt-auto pt-6 border-t border-white/5">
+                    <div id="peerStatusBox" class="glass-card p-4 rounded-xl text-sm text-slate-300 flex items-center justify-between font-medium">
+                        <div class="flex items-center">
+                            <div class="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center mr-3">
+                                <i class="fa-solid fa-user-slash text-slate-500"></i>
+                            </div>
+                            <span class="tracking-wide">Bağlantı Yok</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Chat Area -->
+        <div class="flex-1 flex flex-col h-full relative z-0">
+            
+            <!-- Chat Header -->
+            <div class="h-18 flex items-center justify-between px-8 py-5 glass-header z-10 shrink-0">
+                <div class="flex items-center">
+                    <div class="w-10 h-10 rounded-full bg-white/5 border border-white/10 flex items-center justify-center mr-4 backdrop-blur-md">
+                        <i class="fa-solid fa-hashtag text-brand-light"></i>
+                    </div>
+                    <div>
+                        <h2 id="chatTitle" class="text-white font-semibold text-lg tracking-wide">Genel Sohbet</h2>
+                        <p class="text-xs text-slate-400 font-medium mt-0.5">Uçtan uca şifreli (E2EE) oturum</p>
+                    </div>
+                </div>
+                
+                <!-- Voice Controls -->
+                <div id="voiceControls" class="flex items-center gap-4 hidden">
+                    <div id="voiceStatusIndicator" class="hidden items-center px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-bold uppercase tracking-wider animate-blink">
+                        <i class="fa-solid fa-waveform mr-2"></i> Ses Aktif
+                    </div>
+                    <button id="callBtn" class="w-10 h-10 rounded-full bg-white/5 hover:bg-brand/20 border border-white/10 hover:border-brand/50 text-white flex items-center justify-center transition-all backdrop-blur-md" title="Sesli Ara">
+                        <i class="fa-solid fa-phone"></i>
+                    </button>
+                    <button id="hangupBtn" class="w-10 h-10 rounded-full bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 hover:border-red-500/50 text-red-400 flex items-center justify-center transition-all backdrop-blur-md hidden" title="Aramayı Kapat">
+                        <i class="fa-solid fa-phone-slash"></i>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Chat Messages -->
+            <div id="chatMessages" class="chat-container p-6 flex flex-col gap-5">
+                <!-- Welcome Screen -->
+                <div class="flex flex-col items-center justify-center h-full text-center max-w-lg mx-auto">
+                    <div class="w-24 h-24 rounded-3xl bg-gradient-to-br from-brand/20 to-purple-500/20 flex items-center justify-center mb-6 shadow-2xl border border-white/10 backdrop-blur-xl">
+                        <i class="fa-solid fa-shield-halved text-5xl text-brand-light"></i>
+                    </div>
+                    <h3 class="text-3xl font-bold mb-3 text-white tracking-tight">Merkeziyetsiz İletişim</h3>
+                    <p class="text-slate-400 text-lg leading-relaxed font-light">Verileriniz hiçbir sunucuda depolanmaz. Sol taraftaki panelden eşinizin kimliğini girerek doğrudan ve şifreli sohbete başlayın.</p>
+                </div>
+            </div>
+            
+            <!-- Message Input -->
+            <div class="p-6 mt-auto shrink-0 z-10 glass-header border-t border-white/5 !bg-slate-900/40">
+                <form id="messageForm" class="relative flex items-center glass-input rounded-2xl overflow-hidden focus-within:bg-black/30 focus-within:border-brand/40 transition-all p-1">
+                    <button type="button" class="w-12 h-12 flex items-center justify-center text-slate-400 hover:text-brand-light transition-colors focus:outline-none">
+                        <i class="fa-solid fa-plus text-lg"></i>
+                    </button>
+                    <input type="text" id="messageInput" placeholder="Şifreli bir mesaj gönder..." class="w-full bg-transparent text-white py-3 px-2 outline-none placeholder-slate-500 font-medium text-[15px]" disabled>
+                    <button type="submit" id="sendBtn" class="w-12 h-12 flex items-center justify-center text-brand hover:text-brand-light transition-colors disabled:opacity-30 disabled:cursor-not-allowed mr-1 focus:outline-none" disabled>
+                        <div class="w-8 h-8 rounded-full bg-brand/20 flex items-center justify-center">
+                            <i class="fa-solid fa-paper-plane text-sm"></i>
+                        </div>
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Desktop App (Electron) Window Controls
+        const isElectron = navigator.userAgent.toLowerCase().indexOf(' electron/') > -1;
+        if (isElectron) {
+            document.getElementById('customTitleBar').classList.remove('hidden');
+            
+            if (window.require) {
+                const { ipcRenderer } = window.require('electron');
+                
+                document.getElementById('minBtn').addEventListener('click', () => ipcRenderer.send('window-min'));
+                document.getElementById('maxBtn').addEventListener('click', () => ipcRenderer.send('window-max'));
+                document.getElementById('closeBtn').addEventListener('click', () => ipcRenderer.send('window-close'));
+            }
+        }
+
+        const myIdInput = document.getElementById('myIdInput');
+        const copyIdBtn = document.getElementById('copyIdBtn');
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        
+        const targetIdInput = document.getElementById('targetIdInput');
+        const connectBtn = document.getElementById('connectBtn');
+        const peerStatusBox = document.getElementById('peerStatusBox');
+        
+        const chatTitle = document.getElementById('chatTitle');
+        const chatMessages = document.getElementById('chatMessages');
+        const messageForm = document.getElementById('messageForm');
+        const messageInput = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendBtn');
+        
+        const voiceControls = document.getElementById('voiceControls');
+        const callBtn = document.getElementById('callBtn');
+        const hangupBtn = document.getElementById('hangupBtn');
+        const voiceStatusIndicator = document.getElementById('voiceStatusIndicator');
+        const remoteAudio = document.getElementById('remoteAudio');
+        const toastContainer = document.getElementById('toastContainer');
+
+        let peer = null;
+        let conn = null;
+        let mediaConn = null;
+        let localStream = null;
+        let myId = '';
+
+        function initApp() {
+            const randomString = Math.random().toString(36).substring(2, 8);
+            myId = 'os_' + randomString;
+            
+            peer = new Peer(myId, {
+                config: {
+                    'iceServers': [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                }
+            });
+
+            peer.on('open', (id) => {
+                myIdInput.value = id;
+                updateServerStatus('Ağa bağlandı', 'success');
+                showToast(`P2P ağına başarıyla katıldınız.`, 'success');
+            });
+
+            peer.on('connection', (c) => {
+                if(conn && conn.open) {
+                    c.close();
+                    return;
+                }
+                conn = c;
+                setupDataConnection();
+                showToast(`${conn.peer} sana bağlandı!`, 'brand');
+            });
+
+            peer.on('call', (call) => {
+                showToast(`${call.peer} sesli arama başlattı...`, 'brand');
+                
+                navigator.mediaDevices.getUserMedia({ video: false, audio: true })
+                    .then((stream) => {
+                        localStream = stream;
+                        call.answer(stream);
+                        mediaConn = call;
+                        setupMediaConnection();
+                        showToast('Arama kabul edildi.', 'success');
+                    })
+                    .catch((err) => {
+                        console.error('Mikrofon hatası:', err);
+                        showToast('Mikrofon erişimi olmadığı için arama reddedildi.', 'error');
+                        call.close();
+                    });
+            });
+
+            peer.on('disconnected', () => {
+                updateServerStatus('Bağlantı koptu, tekrar deneniyor...', 'warning');
+                peer.reconnect();
+            });
+
+            peer.on('error', (err) => {
+                if(err.type === 'peer-unavailable') {
+                    showToast('Eş bulunamadı. ID\'yi kontrol edin.', 'error');
+                } else if(err.type === 'network') {
+                    showToast('Ağ bağlantısı koptu.', 'error');
+                } else {
+                    showToast(`Hata: ${err.message}`, 'error');
+                }
+            });
+        }
+
+        function setupDataConnection() {
+            conn.on('open', () => {
+                updatePeerStatus(conn.peer);
+                enableChat(true);
+                clearChat();
+                addSystemMessage(`Uçtan uca şifreli oturum başlatıldı`);
+            });
+
+            conn.on('data', (data) => {
+                if(data.type === 'text') {
+                    addMessage(data.content, 'received', data.time);
+                } else if(data.type === 'system') {
+                    addSystemMessage(data.content);
+                }
+            });
+
+            conn.on('close', () => {
+                showToast('Oturum sonlandırıldı.', 'warning');
+                resetPeerConnection();
+            });
+            
+            conn.on('error', (err) => {
+                showToast(`Bağlantı hatası: ${err.message}`, 'error');
+                resetPeerConnection();
+            });
+        }
+
+        function setupMediaConnection() {
+            showVoiceCallUI(true);
+            
+            mediaConn.on('stream', (remoteStream) => {
+                remoteAudio.srcObject = remoteStream;
+                voiceStatusIndicator.classList.remove('hidden');
+                voiceStatusIndicator.classList.add('flex');
+            });
+
+            mediaConn.on('close', () => {
+                endVoiceCall();
+            });
+            
+            mediaConn.on('error', (err) => {
+                showToast(`Medya hatası: ${err.message}`, 'error');
+                endVoiceCall();
+            });
+        }
+
+        connectBtn.addEventListener('click', () => {
+            const targetId = targetIdInput.value.trim();
+            if(!targetId) return showToast('Lütfen eş ID\'sini girin.', 'warning');
+            if(targetId === myId) return showToast('Kendinize bağlanamazsınız.', 'warning');
+
+            if(conn) conn.close();
+
+            showToast(`Bağlantı kuruluyor...`, 'brand');
+            conn = peer.connect(targetId, { reliable: true });
+            setupDataConnection();
+        });
+
+        copyIdBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(myIdInput.value).then(() => {
+                showToast('Kimlik panoya kopyalandı.', 'success');
+            });
+        });
+
+        messageForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const text = messageInput.value.trim();
+            if(!text || !conn || !conn.open) return;
+
+            const now = new Date();
+            const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+            
+            conn.send({ type: 'text', content: text, time: timeStr });
+            addMessage(text, 'sent', timeStr);
+            messageInput.value = '';
+        });
+
+        callBtn.addEventListener('click', () => {
+            if(!conn || !conn.open) return;
+            
+            navigator.mediaDevices.getUserMedia({ video: false, audio: true })
+                .then((stream) => {
+                    localStream = stream;
+                    showToast('Arama yapılıyor...', 'brand');
+                    mediaConn = peer.call(conn.peer, stream);
+                    setupMediaConnection();
+                })
+                .catch((err) => {
+                    showToast('Mikrofon erişimine izin vermelisiniz.', 'error');
+                });
+        });
+
+        hangupBtn.addEventListener('click', () => {
+            if(mediaConn) mediaConn.close();
+            if(conn && conn.open) {
+                conn.send({ type: 'system', content: 'Sesli arama sonlandırıldı.' });
+                addSystemMessage('Sesli arama sonlandırıldı.');
+            }
+            endVoiceCall();
+        });
+        
+        function updateServerStatus(text, type) {
+            statusText.textContent = text;
+            statusDot.className = 'w-2 h-2 rounded-full mr-2';
+            if(type === 'success') {
+                statusDot.classList.add('bg-emerald-400');
+                statusDot.style.boxShadow = '0 0 8px rgba(52,211,153,0.5)';
+            } else if(type === 'warning') {
+                statusDot.classList.add('bg-yellow-400');
+                statusDot.style.boxShadow = '0 0 8px rgba(250,204,21,0.5)';
+            } else {
+                statusDot.classList.add('bg-red-500');
+                statusDot.style.boxShadow = '0 0 8px rgba(239,68,68,0.5)';
+            }
+        }
+
+        function updatePeerStatus(peerId) {
+            if(peerId) {
+                peerStatusBox.innerHTML = `
+                    <div class="flex items-center">
+                        <div class="w-8 h-8 rounded-full bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center mr-3 shadow-[0_0_10px_rgba(16,185,129,0.2)]">
+                            <i class="fa-solid fa-user-check text-emerald-400"></i>
+                        </div>
+                        <div>
+                            <p class="text-[10px] text-emerald-400 font-bold uppercase tracking-wider mb-0.5">BAĞLI EŞ</p>
+                            <p class="text-[13px] font-mono text-white tracking-wide">${peerId}</p>
+                        </div>
+                    </div>
+                `;
+                chatTitle.textContent = peerId;
+                voiceControls.classList.remove('hidden');
+            } else {
+                peerStatusBox.innerHTML = `
+                    <div class="flex items-center">
+                        <div class="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center mr-3">
+                            <i class="fa-solid fa-user-slash text-slate-500"></i>
+                        </div>
+                        <span class="tracking-wide">Bağlantı Yok</span>
+                    </div>
+                `;
+                chatTitle.textContent = 'Genel Sohbet';
+                voiceControls.classList.add('hidden');
+                enableChat(false);
+            }
+        }
+
+        function resetPeerConnection() {
+            conn = null;
+            updatePeerStatus(null);
+            endVoiceCall();
+            addSystemMessage('Oturum sonlandırıldı');
+        }
+
+        function enableChat(enable) {
+            messageInput.disabled = !enable;
+            sendBtn.disabled = !enable;
+            if(enable) messageInput.focus();
+        }
+
+        function showVoiceCallUI(isActive) {
+            if(isActive) {
+                callBtn.classList.add('hidden');
+                hangupBtn.classList.remove('hidden');
+            } else {
+                callBtn.classList.remove('hidden');
+                hangupBtn.classList.add('hidden');
+                voiceStatusIndicator.classList.add('hidden');
+                voiceStatusIndicator.classList.remove('flex');
+            }
+        }
+
+        function endVoiceCall() {
+            if(localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            mediaConn = null;
+            remoteAudio.srcObject = null;
+            showVoiceCallUI(false);
+        }
+
+        function clearChat() {
+            chatMessages.innerHTML = '';
+        }
+
+        function addMessage(content, type, time) {
+            const placeholder = chatMessages.querySelector('.fa-shield-halved');
+            if(placeholder) clearChat();
+
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `flex w-full ${type === 'sent' ? 'justify-end' : 'justify-start'}`;
+            
+            const bubbleDiv = document.createElement('div');
+            
+            if (type === 'sent') {
+                bubbleDiv.className = 'msg-bubble bg-gradient-to-br from-brand to-brand-dark text-white rounded-2xl rounded-tr-sm px-5 py-3 shadow-lg shadow-brand/20 border border-brand-light/20 flex flex-col';
+            } else {
+                bubbleDiv.className = 'msg-bubble bg-white/10 backdrop-blur-md text-white rounded-2xl rounded-tl-sm px-5 py-3 shadow-lg border border-white/5 flex flex-col';
+            }
+
+            const textSpan = document.createElement('span');
+            textSpan.textContent = content;
+            textSpan.className = 'text-[15px] font-medium leading-relaxed tracking-wide';
+
+            const timeSpan = document.createElement('span');
+            timeSpan.textContent = time;
+            timeSpan.className = `text-[10px] mt-1.5 font-semibold tracking-wider ${
+                type === 'sent' ? 'text-brand-light/70 text-right' : 'text-slate-400 text-left'
+            }`;
+
+            bubbleDiv.appendChild(textSpan);
+            bubbleDiv.appendChild(timeSpan);
+            msgDiv.appendChild(bubbleDiv);
+            
+            chatMessages.appendChild(msgDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function addSystemMessage(content) {
+            const placeholder = chatMessages.querySelector('.fa-shield-halved');
+            if(placeholder) clearChat();
+
+            const msgDiv = document.createElement('div');
+            msgDiv.className = 'flex justify-center w-full my-4';
+            
+            const sysSpan = document.createElement('span');
+            sysSpan.className = 'text-[10px] text-slate-400 font-bold px-4 py-1.5 bg-white/5 border border-white/5 backdrop-blur-sm rounded-full uppercase tracking-widest shadow-inner';
+            sysSpan.textContent = content;
+
+            msgDiv.appendChild(sysSpan);
+            chatMessages.appendChild(msgDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function showToast(message, type = 'info') {
+            const toast = document.createElement('div');
+            toast.className = `toast-enter flex items-center p-4 rounded-2xl shadow-2xl min-w-[300px] max-w-sm glass-card border border-white/10`;
+            
+            let iconBox = '';
+            if(type === 'success') {
+                iconBox = '<div class="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center mr-4"><i class="fa-solid fa-check text-lg"></i></div>';
+            } else if(type === 'error') {
+                iconBox = '<div class="w-10 h-10 rounded-xl bg-red-500/20 text-red-400 flex items-center justify-center mr-4"><i class="fa-solid fa-xmark text-lg"></i></div>';
+            } else if(type === 'warning') {
+                iconBox = '<div class="w-10 h-10 rounded-xl bg-yellow-500/20 text-yellow-400 flex items-center justify-center mr-4"><i class="fa-solid fa-exclamation text-lg"></i></div>';
+            } else {
+                iconBox = '<div class="w-10 h-10 rounded-xl bg-brand/20 text-brand-light flex items-center justify-center mr-4"><i class="fa-solid fa-bell text-lg"></i></div>';
+            }
+
+            toast.innerHTML = `
+                ${iconBox}
+                <p class="text-[14px] font-semibold text-slate-200 flex-1 leading-snug tracking-wide">${message}</p>
+            `;
+
+            toastContainer.appendChild(toast);
+
+            setTimeout(() => {
+                toast.classList.replace('toast-enter', 'toast-exit');
+                setTimeout(() => {
+                    if(toastContainer.contains(toast)) {
+                        toastContainer.removeChild(toast);
+                    }
+                }, 300);
+            }, 4000);
+        }
+
+        window.addEventListener('load', initApp);
+    </script>
+</body>
+</html>
