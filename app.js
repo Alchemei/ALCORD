@@ -543,6 +543,7 @@ async function startScreenShare() {
 
         screenShareVideo.srcObject = localScreenStream;
         screenShareUser.textContent = 'Ekranınızı Paylaşıyorsunuz';
+        fullscreenScreenShareBtn.classList.add('hidden');
         screenShareContainer.classList.remove('hidden');
         screenShareContainer.classList.add('flex');
         
@@ -591,6 +592,7 @@ function setupRemoteMedia(call) {
         call.on('stream', (remoteStream) => {
             screenShareVideo.srcObject = remoteStream;
             screenShareUser.textContent = `${call.metadata.username || 'Birisi'} Ekranını Paylaşıyor`;
+            fullscreenScreenShareBtn.classList.remove('hidden');
             screenShareContainer.classList.remove('hidden');
             screenShareContainer.classList.add('flex');
         });
