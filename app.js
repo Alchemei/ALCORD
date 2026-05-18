@@ -37,7 +37,6 @@ const settingsGainSlider = document.getElementById('settingsGainSlider');
 const settingsGainValue = document.getElementById('settingsGainValue');
 const settingsMyId = document.getElementById('settingsMyId');
 const myUsernameDisplay = document.getElementById('myUsernameDisplay');
-
 const activeVoicePanel = document.getElementById('activeVoicePanel');
 const disconnectVoiceBtn = document.getElementById('disconnectVoiceBtn');
 const activeVoiceChannelName = document.getElementById('activeVoiceChannelName');
@@ -46,10 +45,23 @@ const remoteAudiosContainer = document.getElementById('remoteAudiosContainer');
 const micToggleBtn = document.getElementById('micToggleBtn');
 const deafenToggleBtn = document.getElementById('deafenToggleBtn');
 
+// Screen Sharing DOM Bindings
+const shareScreenBtn = document.getElementById('shareScreenBtn');
+const screenShareContainer = document.getElementById('screenShareContainer');
+const screenShareUser = document.getElementById('screenShareUser');
+const closeScreenShareBtn = document.getElementById('closeScreenShareBtn');
+const screenShareVideo = document.getElementById('screenShareVideo');
+
 // State
 let myId = '';
 let myUsername = 'Kullanıcı';
 let peer = null;
+
+// Screen Sharing State
+let localScreenStream = null;
+let screenCalls = new Map(); // peerId -> call
+let activeIncomingScreenCall = null; // call
+
 
 // Multi-server state
 let joinedServers = []; // Array of { id: String, name: String }
@@ -213,7 +225,11 @@ function initApp() {
             call.close();
             return;
         }
-        call.answer(localStream); 
+        if (call.metadata && call.metadata.type === 'screen-share') {
+            call.answer(); // Ekran paylaşımı için karşıya kendi sesimizi göndermiyoruz (çift ses olmasın)
+        } else {
+            call.answer(localStream);
+        }
         setupRemoteMedia(call);
     });
 
@@ -473,6 +489,7 @@ async function joinVoiceChannel(channelId) {
 
 function leaveVoiceChannel() {
     if(!activeVoiceChannelId) return;
+    if(localScreenStream) stopScreenShare();
     if(localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
     if(activeRnnoiseNode) { activeRnnoiseNode.port.postMessage('destroy'); activeRnnoiseNode.disconnect(); activeRnnoiseNode = null; }
     if(activeAudioCtx) { activeAudioCtx.close(); activeAudioCtx = null; }
@@ -487,7 +504,87 @@ function leaveVoiceChannel() {
     playTone('leave');
 }
 
+async function startScreenShare() {
+    if (!activeVoiceChannelId) return;
+    if (localScreenStream) {
+        stopScreenShare();
+        return;
+    }
+    
+    try {
+        localScreenStream = await navigator.mediaDevices.getDisplayMedia({
+            video: { cursor: "always" },
+            audio: false
+        });
+        
+        localScreenStream.getVideoTracks()[0].onended = () => {
+            stopScreenShare();
+        };
+
+        screenShareVideo.srcObject = localScreenStream;
+        screenShareUser.textContent = 'Ekranınızı Paylaşıyorsunuz';
+        screenShareContainer.classList.remove('hidden');
+        screenShareContainer.classList.add('flex');
+        
+        shareScreenBtn.classList.remove('text-[#666]');
+        shareScreenBtn.classList.add('text-blue-500', 'bg-white/[0.04]');
+
+        activeServer.members.forEach((member, peerId) => {
+            if (peerId !== myId && member.voiceChannelId === activeVoiceChannelId) {
+                const call = peer.call(peerId, localScreenStream, { 
+                    metadata: { type: 'screen-share', username: myUsername } 
+                });
+                screenCalls.set(peerId, call);
+            }
+        });
+        
+        showToast('Ekran paylaşımı başlatıldı.', 'success');
+    } catch(err) {
+        console.error("Ekran paylaşma hatası:", err);
+        showToast('Ekran paylaşımı başlatılamadı.', 'error');
+        localScreenStream = null;
+    }
+}
+
+function stopScreenShare() {
+    if (localScreenStream) {
+        localScreenStream.getTracks().forEach(t => t.stop());
+        localScreenStream = null;
+    }
+    
+    screenCalls.forEach(call => call.close());
+    screenCalls.clear();
+
+    screenShareVideo.srcObject = null;
+    screenShareContainer.classList.add('hidden');
+    screenShareContainer.classList.remove('flex');
+    
+    shareScreenBtn.classList.add('text-[#666]');
+    shareScreenBtn.classList.remove('text-blue-500', 'bg-white/[0.04]');
+    
+    showToast('Ekran paylaşımı sonlandırıldı.', 'info');
+}
+
 function setupRemoteMedia(call) {
+    if (call.metadata && call.metadata.type === 'screen-share') {
+        activeIncomingScreenCall = call;
+        call.on('stream', (remoteStream) => {
+            screenShareVideo.srcObject = remoteStream;
+            screenShareUser.textContent = `${call.metadata.username || 'Birisi'} Ekranını Paylaşıyor`;
+            screenShareContainer.classList.remove('hidden');
+            screenShareContainer.classList.add('flex');
+        });
+        call.on('close', () => {
+            if (activeIncomingScreenCall === call) {
+                screenShareVideo.srcObject = null;
+                screenShareContainer.classList.add('hidden');
+                screenShareContainer.classList.remove('flex');
+                activeIncomingScreenCall = null;
+            }
+        });
+        return;
+    }
+
     mediaConnections.set(call.peer, call);
     call.on('stream', (remoteStream) => {
         let audio = document.getElementById(`audio-${call.peer}`);
@@ -886,6 +983,23 @@ settingsGainSlider.addEventListener('input', (e) => {
 });
 
 disconnectVoiceBtn.addEventListener('click', leaveVoiceChannel);
+
+shareScreenBtn.addEventListener('click', () => {
+    startScreenShare();
+});
+
+closeScreenShareBtn.addEventListener('click', () => {
+    if (localScreenStream) {
+        stopScreenShare();
+    } else {
+        screenShareContainer.classList.add('hidden');
+        screenShareContainer.classList.remove('flex');
+        if (activeIncomingScreenCall) {
+            activeIncomingScreenCall.close();
+            activeIncomingScreenCall = null;
+        }
+    }
+});
 
 // Modal Helpers
 function openModal(id) {

@@ -252,9 +252,14 @@
                     </div>
                     <span class="text-[12px] font-medium text-emerald-500">Ses Bağlantısı Aktif</span>
                 </div>
-                <button id="disconnectVoiceBtn" class="w-7 h-7 rounded hover:bg-white/[0.04] flex items-center justify-center text-[#666] hover:text-red-400 transition-colors" title="Ayrıl">
-                    <i class="fa-solid fa-phone-slash text-[11px]"></i>
-                </button>
+                <div class="flex items-center gap-1">
+                    <button id="shareScreenBtn" class="w-7 h-7 rounded hover:bg-white/[0.04] flex items-center justify-center text-[#666] hover:text-blue-400 transition-colors" title="Ekran Paylaş">
+                        <i class="fa-solid fa-desktop text-[11px]"></i>
+                    </button>
+                    <button id="disconnectVoiceBtn" class="w-7 h-7 rounded hover:bg-white/[0.04] flex items-center justify-center text-[#666] hover:text-red-400 transition-colors" title="Ayrıl">
+                        <i class="fa-solid fa-phone-slash text-[11px]"></i>
+                    </button>
+                </div>
             </div>
             <div id="activeVoiceChannelName" class="text-[13px] text-[#888] px-1 truncate">Oda Adı</div>
         </div>
@@ -297,6 +302,20 @@
                 <button class="w-8 h-8 rounded hover:bg-[#111] flex items-center justify-center text-[#666] hover:text-[#ededed] transition-colors" id="toggleMembersBtn" title="Üyeleri Göster">
                     <i class="fa-solid fa-users text-[12px]"></i>
                 </button>
+            </div>
+        </div>
+
+        <!-- Ekran Paylaşım Paneli -->
+        <div id="screenShareContainer" class="hidden px-6 pt-6 pb-2 flex-col gap-3 shrink-0">
+            <div class="glass-modal rounded-2xl overflow-hidden border border-white/[0.04] shadow-2xl relative">
+                <div class="absolute top-4 left-4 z-10 px-3 py-1 bg-black/60 backdrop-blur-md rounded-lg border border-white/[0.04] text-[11px] text-[#ededed] font-medium flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-red-500 animate-ping"></span>
+                    <span id="screenShareUser">Birisi Ekranını Paylaşıyor</span>
+                </div>
+                <button id="closeScreenShareBtn" class="absolute top-4 right-4 z-10 w-8 h-8 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md flex items-center justify-center text-slate-400 hover:text-white transition-colors" title="Kapat">
+                    <i class="fa-solid fa-xmark text-[14px]"></i>
+                </button>
+                <video id="screenShareVideo" autoplay playsinline class="w-full h-auto max-h-[50vh] object-contain bg-black/40"></video>
             </div>
         </div>
 
