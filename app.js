@@ -103,8 +103,7 @@ let messages = [];
 let localStream = null;
 let mediaConnections = new Map(); 
 
-// Remote Web Audio State for high quality gain and volume boosting up to 300%
-let remoteAudioCtx = null;
+// Remote Web Audio State for high quality gain and volume boosting up to 500%
 let remoteGainNodes = new Map(); // peerId -> GainNode
 let remoteSources = new Map(); // peerId -> MediaStreamAudioSourceNode
 
@@ -517,13 +516,8 @@ function leaveVoiceChannel() {
     if(localScreenStream) stopScreenShare();
     if(localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
     if(activeRnnoiseNode) { activeRnnoiseNode.port.postMessage('destroy'); activeRnnoiseNode.disconnect(); activeRnnoiseNode = null; }
-    if(activeAudioCtx) { activeAudioCtx.close(); activeAudioCtx = null; }
-    micGainNode = null;
-    mediaConnections.forEach(call => call.close());
-    mediaConnections.clear();
-    remoteAudiosContainer.innerHTML = '';
     
-    // Clean up Web Audio peer nodes and context
+    // Clean up Web Audio peer nodes
     remoteGainNodes.forEach((node) => {
         try { node.disconnect(); } catch(e){}
     });
@@ -532,10 +526,12 @@ function leaveVoiceChannel() {
         try { node.disconnect(); } catch(e){}
     });
     remoteSources.clear();
-    if (remoteAudioCtx) {
-        try { remoteAudioCtx.close(); } catch(e){}
-        remoteAudioCtx = null;
-    }
+
+    if(activeAudioCtx) { activeAudioCtx.close(); activeAudioCtx = null; }
+    micGainNode = null;
+    mediaConnections.forEach(call => call.close());
+    mediaConnections.clear();
+    remoteAudiosContainer.innerHTML = '';
 
     updateVoiceState(null);
     activeVoicePanel.classList.add('hidden');
@@ -621,17 +617,6 @@ function stopScreenShare() {
     showToast('Ekran paylaşımı sonlandırıldı.', 'info');
 }
 
-function getRemoteAudioContext() {
-    if (!remoteAudioCtx) {
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        remoteAudioCtx = new AudioContext({ sampleRate: 48000 });
-    }
-    if (remoteAudioCtx.state === 'suspended') {
-        remoteAudioCtx.resume();
-    }
-    return remoteAudioCtx;
-}
-
 function setupRemoteMedia(call) {
     if (call.metadata && call.metadata.type === 'screen-share') {
         activeIncomingScreenCall = call;
@@ -665,9 +650,15 @@ function setupRemoteMedia(call) {
         }
         audio.srcObject = remoteStream;
         
-        // Route remote stream through Web Audio GainNode for clean volume boosting (up to 300%)
+        // Route remote stream through Web Audio GainNode for clean volume boosting (up to 500%)
         try {
-            const ctx = getRemoteAudioContext();
+            const ctx = activeAudioCtx;
+            if (!ctx) {
+                throw new Error('activeAudioCtx is not initialized yet');
+            }
+            if (ctx.state === 'suspended') {
+                ctx.resume();
+            }
             
             // Clean up existing nodes for this peer if any (e.g. on stream update/re-connection)
             if (remoteGainNodes.has(call.peer)) {
