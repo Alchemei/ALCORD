@@ -106,7 +106,6 @@ let mediaConnections = new Map();
 // Remote Web Audio State for high quality gain and volume boosting up to 500%
 let remoteGainNodes = new Map(); // peerId -> GainNode
 let remoteSources = new Map(); // peerId -> MediaStreamAudioSourceNode
-let remoteRnnoiseNodes = new Map(); // peerId -> AudioWorkletNode
 
 // RNNoise
 let rnnoiseWasmBinary = null;
@@ -531,109 +530,54 @@ async function applyRNNoiseProcessing(stream) {
 }
 
 async function updateLocalAudioGraph() {
-    if (!activeAudioCtx) return;
+    if (!activeAudioCtx || !localAudioSource || !localAudioDestination) return;
     
-    // 1. Update local microphone audio graph
-    if (localAudioSource && localAudioDestination) {
-        try {
-            try { localAudioSource.disconnect(); } catch(e){}
-            if (micGainNode) { try { micGainNode.disconnect(); } catch(e){} }
-            if (activeRnnoiseNode) {
-                try {
-                    activeRnnoiseNode.port.postMessage('destroy');
-                    activeRnnoiseNode.disconnect();
-                } catch(e) {}
-                activeRnnoiseNode = null;
+    try {
+        // Disconnect everything first to clear the graph
+        try { localAudioSource.disconnect(); } catch(e){}
+        if (micGainNode) { try { micGainNode.disconnect(); } catch(e){} }
+        if (activeRnnoiseNode) {
+            try {
+                activeRnnoiseNode.port.postMessage('destroy');
+                activeRnnoiseNode.disconnect();
+            } catch(e) {}
+            activeRnnoiseNode = null;
+        }
+        
+        // Re-route dynamically based on active toggle status
+        if (rnnoiseReady && settingsNoiseToggle.checked) {
+            let workletUrl = 'rnnoise-processor.js';
+            if (window.process && window.process.type) {
+                const fs = window.require('fs');
+                const path = window.require('path');
+                const workletPath = path.join(__dirname, 'rnnoise-processor.js');
+                const code = fs.readFileSync(workletPath, 'utf8');
+                const blob = new Blob([code], { type: 'application/javascript' });
+                workletUrl = URL.createObjectURL(blob);
             }
             
-            if (rnnoiseReady && settingsNoiseToggle.checked) {
-                let workletUrl = 'rnnoise-processor.js';
-                if (window.process && window.process.type) {
-                    const fs = window.require('fs');
-                    const path = window.require('path');
-                    const workletPath = path.join(__dirname, 'rnnoise-processor.js');
-                    const code = fs.readFileSync(workletPath, 'utf8');
-                    const blob = new Blob([code], { type: 'application/javascript' });
-                    workletUrl = URL.createObjectURL(blob);
-                }
-                
-                await activeAudioCtx.audioWorklet.addModule(workletUrl);
-                activeRnnoiseNode = new AudioWorkletNode(
-                    activeAudioCtx, 
-                    '@sapphi-red/web-noise-suppressor/rnnoise',
-                    { processorOptions: { maxChannels: 1, wasmBinary: rnnoiseWasmBinary } }
-                );
-                
-                localAudioSource.connect(micGainNode);
-                micGainNode.connect(activeRnnoiseNode);
-                activeRnnoiseNode.connect(localAudioDestination);
-                console.log('[RNNoise] Local outgoing stream graph updated: Noise suppression ENABLED.');
-            } else {
-                localAudioSource.connect(micGainNode);
-                micGainNode.connect(localAudioDestination);
-                console.log('[RNNoise] Local outgoing stream graph updated: Noise suppression DISABLED.');
-            }
-        } catch (err) {
-            console.error('[RNNoise] Dynamic local outgoing graph update failed:', err);
-            try { localAudioSource.connect(micGainNode); } catch(e){}
-            try { micGainNode.connect(localAudioDestination); } catch(e){}
+            await activeAudioCtx.audioWorklet.addModule(workletUrl);
+            activeRnnoiseNode = new AudioWorkletNode(
+                activeAudioCtx, 
+                '@sapphi-red/web-noise-suppressor/rnnoise',
+                { processorOptions: { maxChannels: 1, wasmBinary: rnnoiseWasmBinary } }
+            );
+            
+            localAudioSource.connect(micGainNode);
+            micGainNode.connect(activeRnnoiseNode);
+            activeRnnoiseNode.connect(localAudioDestination);
+            console.log('[RNNoise] Dynamic audio graph updated: Noise suppression ENABLED.');
+        } else {
+            localAudioSource.connect(micGainNode);
+            micGainNode.connect(localAudioDestination);
+            console.log('[RNNoise] Dynamic audio graph updated: Noise suppression DISABLED.');
         }
+    } catch (err) {
+        console.error('[RNNoise] Dynamic local audio graph update failed:', err);
+        // Fallback safety route
+        try { localAudioSource.connect(micGainNode); } catch(e){}
+        try { micGainNode.connect(localAudioDestination); } catch(e){}
     }
-    
-    // 2. Dynamically update ALL active incoming remote peer stream graphs!
-    mediaConnections.forEach(async (call, peerId) => {
-        try {
-            const source = remoteSources.get(peerId);
-            const gainNode = remoteGainNodes.get(peerId);
-            if (!source || !gainNode) return;
-            
-            // Disconnect old connections first
-            try { source.disconnect(); } catch(e){}
-            try { gainNode.disconnect(); } catch(e){}
-            if (remoteRnnoiseNodes.has(peerId)) {
-                const oldRnnoiseNode = remoteRnnoiseNodes.get(peerId);
-                try {
-                    oldRnnoiseNode.port.postMessage('destroy');
-                    oldRnnoiseNode.disconnect();
-                } catch(e){}
-                remoteRnnoiseNodes.delete(peerId);
-            }
-            
-            if (rnnoiseReady && settingsNoiseToggle.checked) {
-                let workletUrl = 'rnnoise-processor.js';
-                if (window.process && window.process.type) {
-                    const fs = window.require('fs');
-                    const path = window.require('path');
-                    const workletPath = path.join(__dirname, 'rnnoise-processor.js');
-                    const code = fs.readFileSync(workletPath, 'utf8');
-                    const blob = new Blob([code], { type: 'application/javascript' });
-                    workletUrl = URL.createObjectURL(blob);
-                }
-                
-                await activeAudioCtx.audioWorklet.addModule(workletUrl);
-                const remoteRnnoiseNode = new AudioWorkletNode(
-                    activeAudioCtx, 
-                    '@sapphi-red/web-noise-suppressor/rnnoise',
-                    { processorOptions: { maxChannels: 1, wasmBinary: rnnoiseWasmBinary } }
-                );
-                
-                source.connect(remoteRnnoiseNode);
-                remoteRnnoiseNode.connect(gainNode);
-                remoteRnnoiseNodes.set(peerId, remoteRnnoiseNode);
-                console.log(`[RNNoise] Remote incoming peer ${peerId} stream graph updated: Noise suppression ENABLED.`);
-            } else {
-                source.connect(gainNode);
-                console.log(`[RNNoise] Remote incoming peer ${peerId} stream graph updated: Noise suppression DISABLED.`);
-            }
-            
-            gainNode.connect(activeAudioCtx.destination);
-        } catch (err) {
-            console.error(`[RNNoise] Dynamic remote incoming graph update failed for peer ${peerId}:`, err);
-            // Fallback safety route
-            try { source.connect(gainNode); } catch(e){}
-            try { gainNode.connect(activeAudioCtx.destination); } catch(e){}
-        }
-    });
 }
 
 async function joinVoiceChannel(channelId) {
@@ -682,14 +626,6 @@ function leaveVoiceChannel() {
         try { node.disconnect(); } catch(e){}
     });
     remoteSources.clear();
-    
-    remoteRnnoiseNodes.forEach((node) => {
-        try {
-            node.port.postMessage('destroy');
-            node.disconnect();
-        } catch(e){}
-    });
-    remoteRnnoiseNodes.clear();
 
     if(activeAudioCtx) { activeAudioCtx.close(); activeAudioCtx = null; }
     micGainNode = null;
@@ -835,10 +771,6 @@ function setupRemoteMedia(call) {
                 try { remoteSources.get(call.peer).disconnect(); } catch(e){}
                 remoteSources.delete(call.peer);
             }
-            if (remoteRnnoiseNodes.has(call.peer)) {
-                try { remoteRnnoiseNodes.get(call.peer).disconnect(); } catch(e){}
-                remoteRnnoiseNodes.delete(call.peer);
-            }
             
             const source = ctx.createMediaStreamSource(remoteStream);
             const gainNode = ctx.createGain();
@@ -846,37 +778,7 @@ function setupRemoteMedia(call) {
             const userVol = localUserVolumes.get(call.peer) ?? 1.0;
             gainNode.gain.value = isDeafened ? 0 : userVol;
             
-            if (rnnoiseReady && settingsNoiseToggle.checked) {
-                try {
-                    let workletUrl = 'rnnoise-processor.js';
-                    if (window.process && window.process.type) {
-                        const fs = window.require('fs');
-                        const path = window.require('path');
-                        const workletPath = path.join(__dirname, 'rnnoise-processor.js');
-                        const code = fs.readFileSync(workletPath, 'utf8');
-                        const blob = new Blob([code], { type: 'application/javascript' });
-                        workletUrl = URL.createObjectURL(blob);
-                    }
-                    
-                    await ctx.audioWorklet.addModule(workletUrl);
-                    const remoteRnnoiseNode = new AudioWorkletNode(
-                        ctx, 
-                        '@sapphi-red/web-noise-suppressor/rnnoise',
-                        { processorOptions: { maxChannels: 1, wasmBinary: rnnoiseWasmBinary } }
-                    );
-                    
-                    source.connect(remoteRnnoiseNode);
-                    remoteRnnoiseNode.connect(gainNode);
-                    remoteRnnoiseNodes.set(call.peer, remoteRnnoiseNode);
-                    console.log(`[RNNoise] Remote peer ${call.peer} stream routed through RNNoise!`);
-                } catch(e) {
-                    console.error(`[RNNoise] Remote peer ${call.peer} RNNoise setup failed, bypassing:`, e);
-                    source.connect(gainNode);
-                }
-            } else {
-                source.connect(gainNode);
-            }
-            
+            source.connect(gainNode);
             gainNode.connect(ctx.destination);
             
             remoteSources.set(call.peer, source);

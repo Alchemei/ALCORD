@@ -111,11 +111,6 @@ function createWindow () {
 
   mainWindow.loadFile('index.html');
 
-  // Bridge renderer console logs to the main process terminal
-  mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
-    console.log(`[Renderer] [Line ${line}] ${message}`);
-  });
-
   // Kapatma butonuna basıldığında uygulamayı kapatmak yerine tepsiye gizleyelim
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
