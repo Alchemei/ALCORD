@@ -1249,6 +1249,16 @@ function initElectronTitleBar() {
             ipcRenderer.on('toggle-deafen-global', () => {
                 toggleDeafen();
             });
+
+            ipcRenderer.on('hotkey-register-status', (event, status) => {
+                console.log('Hotkey register status report:', status);
+                if (status.mic.shortcut && !status.mic.success) {
+                    showToast(`Susturma global kısayolu (${status.mic.shortcut}) kaydedilemedi. Harf tuşlarında Ctrl, Alt veya Shift birleşimini kullanmalısınız.`, 'error');
+                }
+                if (status.deafen.shortcut && !status.deafen.success) {
+                    showToast(`Sağırlaştırma global kısayolu (${status.deafen.shortcut}) kaydedilemedi. Harf tuşlarında Ctrl, Alt veya Shift birleşimini kullanmalısınız.`, 'error');
+                }
+            });
         } catch(e) {
             console.error('Electron IPC bind error:', e);
         }

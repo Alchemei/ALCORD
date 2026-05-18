@@ -103,12 +103,15 @@ function createTray() {
 ipcMain.on('register-hotkeys', (event, { micShortcut, deafenShortcut }) => {
   globalShortcut.unregisterAll();
   
+  let micReg = false;
+  let deafenReg = false;
+
   if (micShortcut) {
     try {
-      globalShortcut.register(micShortcut, () => {
+      micReg = globalShortcut.register(micShortcut, () => {
         if (mainWindow) mainWindow.webContents.send('toggle-mute-global');
       });
-      console.log('Registered global mic shortcut:', micShortcut);
+      console.log(`Registered mic shortcut: ${micShortcut} - Success: ${micReg}`);
     } catch (e) {
       console.error('Failed to register global mic shortcut:', e);
     }
@@ -116,14 +119,20 @@ ipcMain.on('register-hotkeys', (event, { micShortcut, deafenShortcut }) => {
   
   if (deafenShortcut) {
     try {
-      globalShortcut.register(deafenShortcut, () => {
+      deafenReg = globalShortcut.register(deafenShortcut, () => {
         if (mainWindow) mainWindow.webContents.send('toggle-deafen-global');
       });
-      console.log('Registered global deafen shortcut:', deafenShortcut);
+      console.log(`Registered deafen shortcut: ${deafenShortcut} - Success: ${deafenReg}`);
     } catch (e) {
       console.error('Failed to register global deafen shortcut:', e);
     }
   }
+
+  // Durumu renderer tarafına raporlayalım
+  event.reply('hotkey-register-status', {
+    mic: { shortcut: micShortcut, success: micReg },
+    deafen: { shortcut: deafenShortcut, success: deafenReg }
+  });
 });
 
 app.whenReady().then(() => {
