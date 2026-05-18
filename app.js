@@ -113,6 +113,8 @@ let rnnoiseReady = false;
 let micGainNode = null;
 let activeRnnoiseNode = null;
 let activeAudioCtx = null;
+let localAudioSource = null;
+let localAudioDestination = null;
 
 async function preloadRNNoise() {
     try {
@@ -122,7 +124,15 @@ async function preloadRNNoise() {
             const path = window.require('path');
             const wasmPath = path.join(__dirname, 'rnnoise.wasm');
             const buffer = fs.readFileSync(wasmPath);
-            rnnoiseWasmBinary = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+            
+            // Explicitly copy bytes into a clean, unpooled, un-shared ArrayBuffer to prevent AudioWorklet cloning bugs
+            const cleanArrayBuffer = new ArrayBuffer(buffer.length);
+            const view = new Uint8Array(cleanArrayBuffer);
+            for (let i = 0; i < buffer.length; i++) {
+                view[i] = buffer[i];
+            }
+            
+            rnnoiseWasmBinary = cleanArrayBuffer;
             rnnoiseReady = true;
             console.log('[RNNoise] WASM loaded successfully via Node FS.');
             return;
@@ -205,6 +215,14 @@ function initApp() {
     if(rawVolumes) {
         try { localUserVolumes = new Map(JSON.parse(rawVolumes)); } catch(e) { localUserVolumes = new Map(); }
     } else { localUserVolumes = new Map(); }
+
+    // Load RNNoise setting
+    const savedNoise = localStorage.getItem('os_rnnoise_enabled');
+    if (savedNoise !== null) {
+        settingsNoiseToggle.checked = savedNoise === 'true';
+    } else {
+        settingsNoiseToggle.checked = true; // default enabled
+    }
 
     // Load Hotkey Settings
     const rawMic = localStorage.getItem('os_hotkey_mic_obj');
@@ -505,7 +523,61 @@ async function applyRNNoiseProcessing(stream) {
         micGainNode.connect(destination);
     }
     
+    localAudioSource = source;
+    localAudioDestination = destination;
+    
     return { processedStream: destination.stream, audioCtx: audioCtx };
+}
+
+async function updateLocalAudioGraph() {
+    if (!activeAudioCtx || !localAudioSource || !localAudioDestination) return;
+    
+    try {
+        // Disconnect everything first to clear the graph
+        try { localAudioSource.disconnect(); } catch(e){}
+        if (micGainNode) { try { micGainNode.disconnect(); } catch(e){} }
+        if (activeRnnoiseNode) {
+            try {
+                activeRnnoiseNode.port.postMessage('destroy');
+                activeRnnoiseNode.disconnect();
+            } catch(e) {}
+            activeRnnoiseNode = null;
+        }
+        
+        // Re-route dynamically based on active toggle status
+        if (rnnoiseReady && settingsNoiseToggle.checked) {
+            let workletUrl = 'rnnoise-processor.js';
+            if (window.process && window.process.type) {
+                const fs = window.require('fs');
+                const path = window.require('path');
+                const workletPath = path.join(__dirname, 'rnnoise-processor.js');
+                const code = fs.readFileSync(workletPath, 'utf8');
+                const blob = new Blob([code], { type: 'application/javascript' });
+                workletUrl = URL.createObjectURL(blob);
+            }
+            
+            await activeAudioCtx.audioWorklet.addModule(workletUrl);
+            activeRnnoiseNode = new AudioWorkletNode(
+                activeAudioCtx, 
+                '@sapphi-red/web-noise-suppressor/rnnoise',
+                { processorOptions: { maxChannels: 1, wasmBinary: rnnoiseWasmBinary } }
+            );
+            
+            localAudioSource.connect(micGainNode);
+            micGainNode.connect(activeRnnoiseNode);
+            activeRnnoiseNode.connect(localAudioDestination);
+            console.log('[RNNoise] Dynamic audio graph updated: Noise suppression ENABLED.');
+        } else {
+            localAudioSource.connect(micGainNode);
+            micGainNode.connect(localAudioDestination);
+            console.log('[RNNoise] Dynamic audio graph updated: Noise suppression DISABLED.');
+        }
+    } catch (err) {
+        console.error('[RNNoise] Dynamic local audio graph update failed:', err);
+        // Fallback safety route
+        try { localAudioSource.connect(micGainNode); } catch(e){}
+        try { micGainNode.connect(localAudioDestination); } catch(e){}
+    }
 }
 
 async function joinVoiceChannel(channelId) {
@@ -557,6 +629,8 @@ function leaveVoiceChannel() {
 
     if(activeAudioCtx) { activeAudioCtx.close(); activeAudioCtx = null; }
     micGainNode = null;
+    localAudioSource = null;
+    localAudioDestination = null;
     mediaConnections.forEach(call => call.close());
     mediaConnections.clear();
     remoteAudiosContainer.innerHTML = '';
@@ -1210,6 +1284,10 @@ saveSettingsBtn.addEventListener('click', () => {
         localStorage.setItem('os_hotkey_deafen_obj', JSON.stringify(hotkeyDeafen));
         deafenToggleBtn.title = `Sağırlaştır (${formatHotkey(hotkeyDeafen)})`;
     }
+    // Save RNNoise Toggle
+    localStorage.setItem('os_rnnoise_enabled', settingsNoiseToggle.checked);
+    updateLocalAudioGraph();
+
     syncGlobalShortcuts();
 
     if(micGainNode) micGainNode.gain.value = parseFloat(settingsGainSlider.value);
