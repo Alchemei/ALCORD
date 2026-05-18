@@ -475,6 +475,14 @@
         </div>
     </div>
 
+    <!-- Resim Görüntüleyici Modalı -->
+    <div id="imageViewerModal" class="fixed inset-0 modal-overlay flex items-center justify-center z-[100] hidden opacity-0 transition-opacity duration-200" onclick="closeImageViewerModal()">
+        <button class="absolute top-6 right-6 w-10 h-10 rounded-full bg-black/60 hover:bg-black/80 flex items-center justify-center text-white transition-colors focus:outline-none z-10" onclick="closeImageViewerModal()">
+            <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+        <img id="imageViewerImg" class="max-w-[90vw] max-h-[90vh] object-contain rounded-xl shadow-2xl border border-white/[0.05] transform scale-95 transition-transform duration-200" onclick="event.stopPropagation()">
+    </div>
+
     <!-- Remote Audio -->
     <div id="remoteAudiosContainer" class="hidden"></div>
     <div id="toastContainer" class="fixed bottom-6 right-6 flex flex-col gap-2 z-50 pointer-events-none"></div>

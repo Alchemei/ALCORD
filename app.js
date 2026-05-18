@@ -887,6 +887,46 @@ function renderMessages() {
             `;
         } else {
             div.className = 'flex gap-3 mt-4 hover:bg-[#111]/50 px-2 py-1 rounded-lg';
+            
+            let messageContentHtml = '';
+            if (msg.file) {
+                const f = msg.file;
+                const sizeStr = f.size > 1024 * 1024 
+                    ? (f.size / (1024 * 1024)).toFixed(1) + ' MB'
+                    : (f.size / 1024).toFixed(1) + ' KB';
+                    
+                if (f.type.startsWith('image/')) {
+                    messageContentHtml = `
+                        <div class="mt-2 group relative max-w-[280px] rounded-xl overflow-hidden border border-white/[0.06] shadow-md bg-black/20 hover:border-white/[0.15] transition-all">
+                            <img src="${f.data}" class="w-full h-auto max-h-[220px] object-cover cursor-zoom-in" onclick="openImageModal('${f.data}')">
+                            <div class="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2.5 opacity-0 group-hover:opacity-100 transition-opacity flex justify-between items-center">
+                                <span class="text-[11px] text-slate-300 truncate mr-2">${f.name}</span>
+                                <a href="${f.data}" download="${f.name}" class="w-6 h-6 rounded bg-blue-600 flex items-center justify-center text-white hover:bg-blue-500 transition-colors shadow">
+                                    <i class="fa-solid fa-arrow-down text-[10px]"></i>
+                                </a>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    messageContentHtml = `
+                        <div class="mt-2 flex items-center gap-3.5 p-3 rounded-xl border border-white/[0.05] bg-white/[0.015] hover:bg-white/[0.03] transition-all max-w-[340px] shadow-sm">
+                            <div class="w-10 h-10 rounded-lg bg-blue-600/10 text-blue-400 border border-blue-500/20 flex items-center justify-center shrink-0">
+                                <i class="fa-regular fa-file-lines text-lg"></i>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <div class="text-[13px] font-medium text-[#ededed] truncate" title="${f.name}">${f.name}</div>
+                                <div class="text-[11px] text-[#666] mt-0.5">${sizeStr}</div>
+                            </div>
+                            <a href="${f.data}" download="${f.name}" class="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-blue-600 hover:text-white flex items-center justify-center text-slate-400 transition-all border border-white/[0.06] shrink-0 shadow-inner">
+                                <i class="fa-solid fa-arrow-down text-[12px]"></i>
+                            </a>
+                        </div>
+                    `;
+                }
+            } else {
+                messageContentHtml = `<div class="text-[#aaa] break-words whitespace-pre-wrap text-[14px] leading-relaxed font-light">${msg.text}</div>`;
+            }
+
             div.innerHTML = `
                 <div class="w-8 h-8 rounded bg-[#1A1A1A] border border-[#222] flex items-center justify-center text-[12px] text-[#aaa] font-bold mt-0.5 shrink-0">
                     ${msg.senderName.substring(0,1).toUpperCase()}
@@ -896,7 +936,7 @@ function renderMessages() {
                         <span class="font-medium text-[#ededed] text-[13px] cursor-pointer">${msg.senderName}</span>
                         <span class="text-[11px] text-[#555]">${msg.time}</span>
                     </div>
-                    <div class="text-[#aaa] break-words whitespace-pre-wrap text-[14px] leading-relaxed font-light">${msg.text}</div>
+                    ${messageContentHtml}
                 </div>
             `;
         }
@@ -1260,3 +1300,92 @@ function initElectronTitleBar() {
 
 initApp();
 initElectronTitleBar();
+
+// ---------------- DIRECT P2P FILE SHARING & IMAGE VIEWING ----------------
+const plusBtn = document.querySelector('#messageForm button[type="button"]');
+const chatFileInput = document.createElement('input');
+chatFileInput.type = 'file';
+chatFileInput.id = 'chatFileInput';
+chatFileInput.className = 'hidden';
+document.body.appendChild(chatFileInput);
+
+if (plusBtn) {
+    plusBtn.addEventListener('click', () => {
+        chatFileInput.click();
+    });
+}
+
+chatFileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    // Max file size limit: 15MB (since WebRTC connection data channels perform best under 20MB)
+    if (file.size > 15 * 1024 * 1024) {
+        showToast('Dosya boyutu 15MB\'dan büyük olamaz.', 'error');
+        chatFileInput.value = '';
+        return;
+    }
+    
+    showToast('Dosya okunuyor ve gönderiliyor...', 'info');
+    
+    const reader = new FileReader();
+    reader.onload = (event) => {
+        const base64Data = event.target.result;
+        sendFileMessage(file.name, file.type, file.size, base64Data);
+        chatFileInput.value = '';
+    };
+    reader.onerror = () => {
+        showToast('Dosya okuma hatası.', 'error');
+        chatFileInput.value = '';
+    };
+    reader.readAsDataURL(file);
+});
+
+function sendFileMessage(fileName, fileType, fileSize, fileData) {
+    if(!activeTextChannelId || !currentServerId) return;
+    const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    
+    const fileObj = {
+        name: fileName,
+        type: fileType,
+        size: fileSize,
+        data: fileData
+    };
+
+    if(isHost) {
+        const msg = { channelId: activeTextChannelId, senderId: myId, senderName: myUsername, text: '', file: fileObj, time };
+        messages.push(msg);
+        broadcastMessageToAll(msg);
+        renderMessages();
+    } else if(hostConnection && hostConnection.open) {
+        hostConnection.send({ type: 'chat', channelId: activeTextChannelId, text: '', file: fileObj, time });
+    }
+}
+
+function openImageModal(src) {
+    const modal = document.getElementById('imageViewerModal');
+    const img = document.getElementById('imageViewerImg');
+    if (!modal || !img) return;
+    img.src = src;
+    modal.classList.remove('hidden');
+    setTimeout(() => {
+        modal.classList.remove('opacity-0');
+        img.classList.remove('scale-95');
+    }, 10);
+}
+
+function closeImageViewerModal() {
+    const modal = document.getElementById('imageViewerModal');
+    const img = document.getElementById('imageViewerImg');
+    if (!modal || !img) return;
+    modal.classList.add('opacity-0');
+    img.classList.add('scale-95');
+    setTimeout(() => {
+        modal.classList.add('hidden');
+        img.src = '';
+    }, 200);
+}
+
+// Bind to window for dynamic HTML element onclick triggers
+window.openImageModal = openImageModal;
+window.closeImageViewerModal = closeImageViewerModal;
