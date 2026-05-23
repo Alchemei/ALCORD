@@ -56,9 +56,11 @@ const btnUploadProfilePic = document.getElementById('btnUploadProfilePic');
 const btnRemoveProfilePic = document.getElementById('btnRemoveProfilePic');
 const profilePicInput = document.getElementById('profilePicInput');
 
-// Screen Sharing DOM Bindings
+// Screen Sharing & Camera DOM Bindings
 const shareScreenBtn = document.getElementById('shareScreenBtn');
+const cameraToggleBtn = document.getElementById('cameraToggleBtn');
 const screenShareContainer = document.getElementById('screenShareContainer');
+const videoGalleryGrid = document.getElementById('videoGalleryGrid');
 const screenShareUser = document.getElementById('screenShareUser');
 const fullscreenScreenShareBtn = document.getElementById('fullscreenScreenShareBtn');
 const closeScreenShareBtn = document.getElementById('closeScreenShareBtn');
@@ -70,10 +72,13 @@ let myUsername = 'Kullanıcı';
 let myProfilePic = '';
 let peer = null;
 
-// Screen Sharing State
+// Screen Sharing & Camera State
 let localScreenStream = null;
 let screenCalls = new Map(); // peerId -> call
 let activeIncomingScreenCall = null; // call
+let localCameraStream = null;
+const cameraCalls = new Map(); // peerId -> call
+const activeIncomingVideoCalls = new Map(); // streamKey -> { call, stream, type, username }
 
 
 // Multi-server state
@@ -532,8 +537,8 @@ function initApp() {
             call.close();
             return;
         }
-        if (call.metadata && call.metadata.type === 'screen-share') {
-            call.answer(); // Ekran paylaşımı için karşıya kendi sesimizi göndermiyoruz (çift ses olmasın)
+        if (call.metadata && (call.metadata.type === 'screen-share' || call.metadata.type === 'camera-share')) {
+            call.answer(); // Ekran veya Kamera paylaşımı için karşıya ses akışı göndermiyoruz
         } else {
             call.answer(localStream);
         }
@@ -905,6 +910,18 @@ function handleClientConnection(conn) {
                 if (activeVoiceChannelId) {
                     if (newChannel === activeVoiceChannelId && oldChannel !== activeVoiceChannelId) {
                         playTone('join');
+                        if (localScreenStream && !screenCalls.has(conn.peer)) {
+                            const call = peer.call(conn.peer, localScreenStream, { 
+                                metadata: { type: 'screen-share', username: myUsername } 
+                            });
+                            screenCalls.set(conn.peer, call);
+                        }
+                        if (localCameraStream && !cameraCalls.has(conn.peer)) {
+                            const call = peer.call(conn.peer, localCameraStream, {
+                                metadata: { type: 'camera-share', username: myUsername }
+                            });
+                            cameraCalls.set(conn.peer, call);
+                        }
                     } else if (oldChannel === activeVoiceChannelId && newChannel !== activeVoiceChannelId) {
                         playTone('leave');
                     }
@@ -1028,6 +1045,18 @@ function joinServer(hostId) {
                         
                         if (newChannel === activeVoiceChannelId && oldChannel !== activeVoiceChannelId) {
                             playTone('join');
+                            if (localScreenStream && !screenCalls.has(id)) {
+                                const call = peer.call(id, localScreenStream, { 
+                                    metadata: { type: 'screen-share', username: myUsername } 
+                                });
+                                screenCalls.set(id, call);
+                            }
+                            if (localCameraStream && !cameraCalls.has(id)) {
+                                const call = peer.call(id, localCameraStream, {
+                                    metadata: { type: 'camera-share', username: myUsername }
+                                });
+                                cameraCalls.set(id, call);
+                            }
                         } else if (oldChannel === activeVoiceChannelId && newChannel !== activeVoiceChannelId) {
                             playTone('leave');
                         }
@@ -1368,6 +1397,7 @@ async function joinVoiceChannel(channelId) {
 function leaveVoiceChannel() {
     if(!activeVoiceChannelId) return;
     if(localScreenStream) stopScreenShare();
+    if(localCameraStream) stopCameraShare();
     if(localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
     if(rawLocalStream) { rawLocalStream.getTracks().forEach(t => t.stop()); rawLocalStream = null; }
     if(activeRnnoiseNode) { activeRnnoiseNode.port.postMessage('destroy'); activeRnnoiseNode.disconnect(); activeRnnoiseNode = null; }
@@ -1429,12 +1459,6 @@ async function startScreenShare(sourceId = null) {
             stopScreenShare();
         };
 
-        screenShareVideo.srcObject = localScreenStream;
-        screenShareUser.textContent = 'Ekranınızı Paylaşıyorsunuz';
-        fullscreenScreenShareBtn.classList.add('hidden');
-        screenShareContainer.classList.remove('hidden');
-        screenShareContainer.classList.add('flex');
-        
         shareScreenBtn.classList.remove('text-[#666]');
         shareScreenBtn.classList.add('text-blue-500', 'bg-white/[0.04]');
 
@@ -1448,6 +1472,7 @@ async function startScreenShare(sourceId = null) {
         });
         
         showToast('Ekran paylaşımı başlatıldı.', 'success');
+        updateVideoGallery();
     } catch(err) {
         console.error("Ekran paylaşma hatası:", err);
         showToast('Ekran paylaşımı başlatılamadı.', 'error');
@@ -1463,35 +1488,232 @@ function stopScreenShare() {
     
     screenCalls.forEach(call => call.close());
     screenCalls.clear();
-
-    screenShareVideo.srcObject = null;
-    screenShareContainer.classList.add('hidden');
-    screenShareContainer.classList.remove('flex');
     
     shareScreenBtn.classList.add('text-[#666]');
     shareScreenBtn.classList.remove('text-blue-500', 'bg-white/[0.04]');
     
     showToast('Ekran paylaşımı sonlandırıldı.', 'info');
+    updateVideoGallery();
+}
+
+async function toggleCameraShare() {
+    if (!activeVoiceChannelId) {
+        showToast('Kameranızı açmak için bir ses odasında olmalısınız.', 'warning');
+        return;
+    }
+    if (localCameraStream) {
+        stopCameraShare();
+    } else {
+        await startCameraShare();
+    }
+}
+
+async function startCameraShare() {
+    try {
+        localCameraStream = await navigator.mediaDevices.getUserMedia({
+            video: { width: 1280, height: 720, frameRate: { ideal: 30, max: 60 } },
+            audio: false
+        });
+        
+        activeServer.members.forEach((member, peerId) => {
+            if (peerId !== myId && member.voiceChannelId === activeVoiceChannelId) {
+                const call = peer.call(peerId, localCameraStream, {
+                    metadata: { type: 'camera-share', username: myUsername }
+                });
+                cameraCalls.set(peerId, call);
+            }
+        });
+        
+        if (cameraToggleBtn) {
+            cameraToggleBtn.classList.remove('text-[#666]');
+            cameraToggleBtn.classList.add('text-emerald-400', 'bg-white/[0.04]');
+            cameraToggleBtn.title = "Kamerayı Kapat";
+        }
+        
+        showToast('Kamera yayını başlatıldı.', 'success');
+        updateVideoGallery();
+    } catch (err) {
+        console.error("Kamera paylaşımı başlatılamadı:", err);
+        showToast('Kamera erişimi sağlanamadı.', 'error');
+        localCameraStream = null;
+    }
+}
+
+function stopCameraShare() {
+    if (localCameraStream) {
+        localCameraStream.getTracks().forEach(t => t.stop());
+        localCameraStream = null;
+    }
+    
+    cameraCalls.forEach(call => call.close());
+    cameraCalls.clear();
+    
+    if (cameraToggleBtn) {
+        cameraToggleBtn.classList.add('text-[#666]');
+        cameraToggleBtn.classList.remove('text-emerald-400', 'bg-white/[0.04]');
+        cameraToggleBtn.title = "Kamerayı Aç";
+    }
+    
+    showToast('Kamera yayını sonlandırıldı.', 'info');
+    updateVideoGallery();
+}
+
+function updateVideoGallery() {
+    const feeds = [];
+    
+    if (localScreenStream) {
+        feeds.push({
+            id: 'local-screen',
+            stream: localScreenStream,
+            type: 'screen-share',
+            label: 'Ekranınızı Paylaşıyorsunuz'
+        });
+    }
+    
+    if (localCameraStream) {
+        feeds.push({
+            id: 'local-camera',
+            stream: localCameraStream,
+            type: 'camera-share',
+            label: 'Kameranız'
+        });
+    }
+    
+    activeIncomingVideoCalls.forEach((info, key) => {
+        feeds.push({
+            id: key,
+            stream: info.stream,
+            type: info.type,
+            label: `${info.username} (${info.type === 'screen-share' ? 'Ekran' : 'Kamera'})`
+        });
+    });
+    
+    if (feeds.length === 0) {
+        screenShareContainer.classList.add('hidden');
+        screenShareContainer.classList.remove('flex');
+        videoGalleryGrid.innerHTML = '';
+        return;
+    }
+    
+    screenShareContainer.classList.remove('hidden');
+    screenShareContainer.classList.add('flex');
+    
+    // Dynamically adjust grid column layout
+    videoGalleryGrid.className = "grid gap-4 w-full transition-all duration-300";
+    if (feeds.length === 1) {
+        videoGalleryGrid.classList.add('grid-cols-1');
+    } else if (feeds.length === 2) {
+        videoGalleryGrid.classList.add('grid-cols-1', 'md:grid-cols-2');
+    } else {
+        videoGalleryGrid.classList.add('grid-cols-1', 'sm:grid-cols-2', 'lg:grid-cols-3');
+    }
+    
+    // Smart reconciliation: remove card elements no longer in feeds
+    const activeIds = new Set(feeds.map(f => f.id));
+    Array.from(videoGalleryGrid.children).forEach(card => {
+        const cardId = card.id.replace('video-card-', '');
+        if (!activeIds.has(cardId)) {
+            card.remove();
+        }
+    });
+    
+    // Create or update card elements
+    feeds.forEach(feed => {
+        let card = document.getElementById(`video-card-${feed.id}`);
+        if (!card) {
+            card = document.createElement('div');
+            card.id = `video-card-${feed.id}`;
+            card.className = "glass-modal rounded-2xl overflow-hidden border border-white/[0.04] shadow-2xl relative flex flex-col items-center justify-center bg-black/40 min-h-[240px] transition-all";
+            
+            // Header label overlay
+            const header = document.createElement('div');
+            header.className = "absolute top-3 left-3 z-10 px-2.5 py-1 bg-black/60 backdrop-blur-md rounded-lg border border-white/[0.04] text-[10px] text-[#ededed] font-medium flex items-center gap-1.5";
+            header.innerHTML = `
+                <span class="w-1.5 h-1.5 rounded-full ${feed.id.startsWith('local') ? 'bg-emerald-400' : 'bg-red-500'} ${feed.type === 'screen-share' ? '' : 'animate-pulse'}"></span>
+                <span>${feed.label}</span>
+            `;
+            card.appendChild(header);
+            
+            // Fullscreen & Close button controls overlay
+            const controls = document.createElement('div');
+            controls.className = "absolute top-3 right-3 z-10 flex items-center gap-1.5";
+            
+            const fullscreenBtn = document.createElement('button');
+            fullscreenBtn.className = "w-7 h-7 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md flex items-center justify-center text-slate-400 hover:text-white transition-colors focus:outline-none cursor-pointer";
+            fullscreenBtn.innerHTML = '<i class="fa-solid fa-expand text-[10px]"></i>';
+            fullscreenBtn.title = "Tam Ekran";
+            fullscreenBtn.onclick = () => {
+                const v = card.querySelector('video');
+                if (v) {
+                    if (v.requestFullscreen) v.requestFullscreen();
+                    else if (v.webkitRequestFullscreen) v.webkitRequestFullscreen();
+                }
+            };
+            controls.appendChild(fullscreenBtn);
+            
+            if (feed.id === 'local-screen') {
+                const closeBtn = document.createElement('button');
+                closeBtn.className = "w-7 h-7 rounded-full bg-black/60 hover:bg-rose-600/80 backdrop-blur-md flex items-center justify-center text-slate-400 hover:text-white transition-colors focus:outline-none cursor-pointer";
+                closeBtn.innerHTML = '<i class="fa-solid fa-xmark text-[11px]"></i>';
+                closeBtn.title = "Paylaşımı Kapat";
+                closeBtn.onclick = () => stopScreenShare();
+                controls.appendChild(closeBtn);
+            } else if (feed.id === 'local-camera') {
+                const closeBtn = document.createElement('button');
+                closeBtn.className = "w-7 h-7 rounded-full bg-black/60 hover:bg-rose-600/80 backdrop-blur-md flex items-center justify-center text-slate-400 hover:text-white transition-colors focus:outline-none cursor-pointer";
+                closeBtn.innerHTML = '<i class="fa-solid fa-xmark text-[11px]"></i>';
+                closeBtn.title = "Kamerayı Kapat";
+                closeBtn.onclick = () => stopCameraShare();
+                controls.appendChild(closeBtn);
+            }
+            
+            card.appendChild(controls);
+            
+            const video = document.createElement('video');
+            video.autoplay = true;
+            video.playsInline = true;
+            video.className = "w-full h-full min-h-[240px] max-h-[45vh] object-cover bg-black/20 rounded-2xl";
+            
+            if (feed.id.startsWith('local')) {
+                video.muted = true;
+            }
+            
+            card.appendChild(video);
+            videoGalleryGrid.appendChild(card);
+            
+            // Assign srcObject to play stream
+            video.srcObject = feed.stream;
+        } else {
+            const video = card.querySelector('video');
+            if (video && video.srcObject !== feed.stream) {
+                video.srcObject = feed.stream;
+            }
+        }
+    });
 }
 
 function setupRemoteMedia(call) {
-    if (call.metadata && call.metadata.type === 'screen-share') {
-        activeIncomingScreenCall = call;
+    if (call.metadata && (call.metadata.type === 'screen-share' || call.metadata.type === 'camera-share')) {
+        const streamKey = `${call.peer}-${call.metadata.type}`;
         call.on('stream', (remoteStream) => {
-            screenShareVideo.srcObject = remoteStream;
-            screenShareUser.textContent = `${call.metadata.username || 'Birisi'} Ekranını Paylaşıyor`;
-            fullscreenScreenShareBtn.classList.remove('hidden');
-            screenShareContainer.classList.remove('hidden');
-            screenShareContainer.classList.add('flex');
+            activeIncomingVideoCalls.set(streamKey, {
+                call: call,
+                stream: remoteStream,
+                type: call.metadata.type,
+                username: call.metadata.username || 'Birisi'
+            });
+            updateVideoGallery();
         });
-        call.on('close', () => {
-            if (activeIncomingScreenCall === call) {
-                screenShareVideo.srcObject = null;
-                screenShareContainer.classList.add('hidden');
-                screenShareContainer.classList.remove('flex');
-                activeIncomingScreenCall = null;
+        
+        const cleanup = () => {
+            if (activeIncomingVideoCalls.has(streamKey)) {
+                activeIncomingVideoCalls.delete(streamKey);
+                updateVideoGallery();
             }
-        });
+        };
+        
+        call.on('close', cleanup);
+        call.on('error', cleanup);
         return;
     }
 
@@ -3936,6 +4158,10 @@ settingsGainSlider.addEventListener('input', (e) => {
 });
 
 disconnectVoiceBtn.addEventListener('click', leaveVoiceChannel);
+
+cameraToggleBtn.addEventListener('click', () => {
+    toggleCameraShare();
+});
 
 shareScreenBtn.addEventListener('click', () => {
     openScreenPicker();

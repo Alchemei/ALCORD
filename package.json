@@ -7,15 +7,38 @@
     "start": "electron .",
     "dev": "electron .",
     "dev2": "electron . --profile=2",
-    "web": "node server.js"
+    "web": "node server.js",
+    "dist": "electron-builder"
   },
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "electron": "^42.1.0"
+    "electron": "^42.1.0",
+    "electron-builder": "^26.8.1",
+    "electron-packager": "^17.1.2"
   },
   "dependencies": {
     "@sapphi-red/web-noise-suppressor": "^0.3.5",
     "express": "^5.2.1"
+  },
+  "build": {
+    "appId": "com.alchemei.alcord",
+    "productName": "ALCORD",
+    "win": {
+      "target": "nsis",
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ALCORD"
+    },
+    "files": [
+      "**/*",
+      "!ALCORD-win32-x64/**/*",
+      "!dist/**/*"
+    ]
   }
 }
