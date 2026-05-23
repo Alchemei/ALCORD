@@ -4,6 +4,8 @@ ALCORD is a futuristic, ultra-modern, and highly secure serverless (P2P - Peer-t
 
 Featuring an elegant, state-of-the-art **Glassmorphism** design system, ALCORD is built to wow users and deliver the peak standard of modern desktop application aesthetics.
 
+![ALCORD UI](screenshots/alcord_ui.png)
+
 ---
 
 ## ✨ Features Highlight
