@@ -178,14 +178,7 @@ async function preloadRNNoise() {
             const wasmPath = path.join(__dirname, 'rnnoise.wasm');
             const buffer = fs.readFileSync(wasmPath);
             
-            // Explicitly copy bytes into a clean, unpooled, un-shared ArrayBuffer to prevent AudioWorklet cloning bugs
-            const cleanArrayBuffer = new ArrayBuffer(buffer.length);
-            const view = new Uint8Array(cleanArrayBuffer);
-            for (let i = 0; i < buffer.length; i++) {
-                view[i] = buffer[i];
-            }
-            
-            rnnoiseWasmBinary = cleanArrayBuffer;
+            rnnoiseWasmBinary = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
             rnnoiseReady = true;
             console.log('[RNNoise] WASM loaded successfully via Node FS.');
             return;
@@ -1241,7 +1234,7 @@ async function applyRNNoiseProcessing(stream) {
             activeRnnoiseNode = new AudioWorkletNode(
                 audioCtx, 
                 '@sapphi-red/web-noise-suppressor/rnnoise',
-                { processorOptions: { maxChannels: 1, wasmBinary: rnnoiseWasmBinary } }
+                { processorOptions: { maxChannels: 1, wasmBinary: rnnoiseWasmBinary.slice(0) } }
             );
             source.connect(micGainNode);
             micGainNode.connect(activeRnnoiseNode);
@@ -1297,7 +1290,7 @@ async function updateLocalAudioGraph() {
             activeRnnoiseNode = new AudioWorkletNode(
                 activeAudioCtx, 
                 '@sapphi-red/web-noise-suppressor/rnnoise',
-                { processorOptions: { maxChannels: 1, wasmBinary: rnnoiseWasmBinary } }
+                { processorOptions: { maxChannels: 1, wasmBinary: rnnoiseWasmBinary.slice(0) } }
             );
             
             localAudioSource.connect(micGainNode);
