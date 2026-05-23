@@ -38,16 +38,19 @@ class KeyListener
             int vkCode = Marshal.ReadInt32(lParam);
             Keys key = (Keys)vkCode;
             
-            // Check modifier states
-            bool ctrl = (Control.ModifierKeys & Keys.Control) == Keys.Control;
-            bool alt = (Control.ModifierKeys & Keys.Alt) == Keys.Alt;
-            bool shift = (Control.ModifierKeys & Keys.Shift) == Keys.Shift;
+            // Check modifier states globally using Win32 API to work when backgrounded
+            bool ctrl = (GetKeyState(0x11) & 0x8000) != 0; // VK_CONTROL = 0x11
+            bool alt = (GetKeyState(0x12) & 0x8000) != 0;  // VK_MENU (Alt) = 0x12
+            bool shift = (GetKeyState(0x10) & 0x8000) != 0; // VK_SHIFT = 0x10
 
             // Print highly parseable hotkey signature
             Console.WriteLine(string.Format("Key:{0}|Ctrl:{1}|Alt:{2}|Shift:{3}", key, ctrl, alt, shift));
         }
         return CallNextHookEx(_hookID, nCode, wParam, lParam);
     }
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, ExactSpelling = true)]
+    private static extern short GetKeyState(int keyCode);
 
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);

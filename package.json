@@ -5,6 +5,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "dev": "electron .",
+    "dev2": "electron . --profile=2",
     "web": "node server.js"
   },
   "author": "",

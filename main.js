@@ -2,6 +2,19 @@ const { app, BrowserWindow, ipcMain, session, desktopCapturer, Tray, Menu } = re
 const path = require('path');
 const { spawn } = require('child_process');
 
+// Profile isolation support for running multiple instances on the same machine
+const profileArg = process.argv.find(arg => arg.startsWith('--profile='));
+if (profileArg) {
+  const profileName = profileArg.split('=')[1];
+  try {
+    const customUserDataPath = path.join(app.getPath('appData'), `ALCORD-${profileName}`);
+    app.setPath('userData', customUserDataPath);
+    console.log(`[ALCORD] Setting custom userData path to: ${customUserDataPath}`);
+  } catch (err) {
+    console.error('[ALCORD] Failed to set custom userData path:', err);
+  }
+}
+
 let mainWindow;
 let tray;
 let isQuitting = false;
@@ -110,6 +123,7 @@ function createWindow () {
   });
 
   mainWindow.loadFile('index.html');
+  mainWindow.webContents.openDevTools();
 
   // Kapatma butonuna basıldığında uygulamayı kapatmak yerine tepsiye gizleyelim
   mainWindow.on('close', (event) => {
