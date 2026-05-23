@@ -1,105 +1,105 @@
 # 🌌 ALCORD - Premium P2P Chat & Media Client
 
-ALCORD, **Electron** ve **WebRTC (PeerJS)** teknolojileri kullanılarak geliştirilmiş, uçtan uca şifreli (E2E), tamamen sunucusuz (P2P - Peer-to-Peer) çalışan fütüristik ve ultra modern bir görüntülü/sesli sohbet uygulamasıdır. 
+ALCORD is a futuristic, ultra-modern, and highly secure serverless (P2P - Peer-to-Peer) audio, video, and text communication client built with **Electron** and **WebRTC (PeerJS)**. 
 
-Yüksek kaliteli **Cam Efektli (Glassmorphism)** tasarımıyla modern ve estetik standartların en üst seviyesini hedefler.
-
----
-
-## ✨ Öne Çıkan Özellikler
-
-### 📹 1. Premium Görüntülü Görüşme & Kamera Paylaşımı (Unified Video Grid)
-* Ses odalarında kullanılmak üzere yüksek çözünürlüklü ve akıcı tek yönlü video yayını çeken yerel kamera kontrol altyapısı.
-* **Unified Video Gallery Grid:** Ekran paylaşımlarını ve kamera görüntülerini yan yana veya alt alta yerleştiren, akış sayısına göre dinamik olarak boyut değiştiren (1 sütun, 2 sütun veya 3 sütun ızgara) fütüristik video paneli.
-* **Akıllı DOM Reconciliation (Diffing):** Video akışlarının her değişiklikte (yeni biri kamerayı açtığında vb.) donmasını veya baştan yüklenmesini önleyen akıllı DOM eşleştirme motoru.
-* **Late-Joiner Desteği:** Bir odaya sonradan katılan üyelerin, odadaki aktif video veya ekran yayınlarını otomatik aramayla anında yakalayabilmesini sağlayan dinamik PeerJS el sıkışması.
-
-### 🔇 2. Yapay Zeka Destekli Gürültü Engelleme (RNNoise AI)
-* **RNNoise AI Integration:** SIMD hızlandırmalı WebAssembly build'i olan RNNoise kütüphanesi kullanılarak arka plandaki fan, klima, klavye ve dip sesleri tamamen temizlenir.
-* **Detached ArrayBuffer Koruması:** Web Audio AudioWorklet iş parçacığının ArrayBuffer verilerini transfer ederek sıfırlamasını önleyen güvenli bellek klonlama yama sistemi (`slice(0)`). Her oda geçişinde ve toggle işleminde tam performans sağlar.
-* **Dinamik Ses Grafiği:** Ayarlar panelinden anlık olarak ses kazancı (mic gain up to 5x) ve RNNoise filtresi açılıp kapatılabilir.
-
-### 🖥️ 3. Ekran Paylaşımı (Custom Picker Modal)
-* Ekran paylaşımını başlatırken tüm ekranları ve açık pencereleri canlı küçük resimleriyle (live thumbnails) listeleyen fütüristik ekran seçici modalı.
-* Tam ekran (native fullscreen) modu, video içi kontroller ve paylaşım sonlandırma tuşları.
-
-### 👥 4. Gelişmiş Sunucu Rolleri & Renkli Kullanıcı Grupları
-* **Sunucu Rolleri Paneli:** Kurucu (Host) tarafından yönetilen; rol oluşturma, silme, renk paletinden özel renk atama ve yetki hiyerarşisi oluşturma sistemi.
-* Sunucu üyelerinin rollerine göre kategorize edildiği, özel rol renkleriyle süslenmiş interaktif üye listesi.
-* Sunucu yetkililerine (Administrators) host tarafından kanal oluşturma, silme ve düzenleme yetkisi verilebilmesi ve bunun tüm ağda P2P paketleriyle senkronize edilmesi.
-
-### 💬 5. Modern Sohbet UX Özellikleri
-* **Emoji Tepkileri (Reactions):** Mesajların altına 24 farklı emoji ile tepki ekleme/kaldırma, tepki verenlerin sayaçları ve kendi tepkileriniz için özel parlayan mavi kenarlıklar.
-* **Mesaj Düzenleme & Sabitleme (Edit & Pin):** Mesajları düzenleme altyapısı, sabitleme (pin) çekmecesi ve sabitlenmiş mesaja tek tıkla yumuşak kayma (`scrollToMessage`).
-* **@Mention Autocomplete:** Sohbet alanına `@` yazıldığında sunucu üyelerini listeleyen, klavye yön tuşlarıyla gezilebilen ve seçilen üyeyi mesaj içinde vurgulayarak bildirim tetikleyen sistem.
-* **Mesaj Arama:** Mesaj geçmişinde anlık (debounced) kelime arama modali ve eşleşen kelimelerin sarı ile vurgulanması.
-* **Tarih Ayraçları:** Mesaj akışında günler değiştikçe ("Bugün", "Dün" veya "24 Mayıs 2026") otomatik eklenen tarih çizgileri.
-* **Okunmamış Rozetleri (Unread Badges):** Kanallar, DM listesi ve sunucular için aktif olunmayan sohbetlerden gelen mesajları sayan gerçek zamanlı kırmızı unread rozetleri.
-
-### 📎 6. Dosya Transferi & Inline Medya Oynatıcılar
-* **Sürükle-Bırak (Drag & Drop):** Bilgisayarınızdan bir dosyayı doğrudan sohbet alanına sürükleyip bırakarak hızlı P2P transfer başlatma.
-* **Ctrl+V Desteği:** Panodaki ekran görüntülerini veya resimleri doğrudan yapıştırarak gönderebilme.
-* **Inline Audio/Video Players:** Gönderilen `.mp3`, `.wav` veya `.mp4`, `.webm` medya dosyalarını tarayıcı dışına çıkmadan doğrudan sohbet balonu içinde oynatan, ses ve ilerleme çubuğu içeren cam efektli inline oynatıcılar.
-
-### ⌨️ 7. Win32 Düşük Seviye Global Kısayol Tuşları (Global Hotkeys)
-* **C# Keyhook Derlemesi:** Arka planda çalışan ve Win32 API'leri kullanarak tüm Windows genelinde klavye basışlarını ve modifier tuşları (Ctrl, Alt, Shift) dinleyen C# tabanlı `keylistener.exe` entegrasyonu.
-* Uygulama arka planda simge durumunda veya başka bir oyunda olsanız bile çalışabilen susturma (Mute - Alt+M) ve sağırlaştırma (Deafen - Alt+D) global kısayol atamaları.
+Featuring an elegant, state-of-the-art **Glassmorphism** design system, ALCORD is built to wow users and deliver the peak standard of modern desktop application aesthetics.
 
 ---
 
-## 🚀 Teknolojik Altyapı
+## ✨ Features Highlight
 
-* **Core Framework:** HTML5, Vanilla CSS, Vanilla Javascript (TailwindCSS yardımcı utility sınıfları ve fütüristik cam teması ile zenginleştirilmiştir).
-* **Desktop Wrapper:** Electron (çerçevesiz, özel başlık çubuğu tasarımı ve sistem tepsisi - system tray entegrasyonu).
+### 📹 1. Premium Video Calling & Camera Sharing (Unified Video Grid)
+* High-definition, low-latency, one-way webcam video capture (`localCameraStream`) designed to run perfectly without interfering with active microphone audio streams.
+* **Unified Video Gallery Grid:** A futuristic video panel that merges all active screen shares and webcam feeds (including your own) into a dynamic grid layout that automatically adapts based on feed count (1 column, 2 columns, or 3 columns).
+* **Smart DOM Reconciliation (Diffing):** A custom reconciliation engine that manages video cards smoothly, preventing stutters, pauses, or frame freezes whenever users toggle their cameras or join/leave rooms.
+* **Late-Joiner Stream Sync:** Real-time P2P packet handshakes that ensure any user joining an active voice channel is automatically called and instantly receives all active video and screen shares.
+
+### 🔇 2. AI-Powered Noise Suppression (RNNoise AI Enabler)
+* SIMD-accelerated WebAssembly compilation of Shiguredo Inc.'s RNNoise library to dynamically suppress background noise, keyboard clicks, fans, and ambient hums.
+* **Detached ArrayBuffer Protection:** An advanced memory-management yama (`slice(0)`) that prevents Web Audio AudioWorklet threads from cloning and detaching the WASM binary. This guarantees consistent, high-performance noise filtering across subsequent toggles and channel changes.
+* **Dynamic Audio Routing:** Integrate mic gain boosters (up to 5x level amplification) and a direct RNNoise toggle switch inside the glassmorphic Settings panel.
+
+### 🖥️ 3. Screen Sharing (Custom Picker Modal)
+* A gorgeous screen and window capturer picker modal displaying live, real-time thumbnails of active screens and application windows.
+* Supports high-resolution desktop captures, native fullscreen player mode, custom in-card controls, and safety confirmation checks.
+
+### 👥 4. Advanced Server Roles & Hiearchy Permissions
+* **Server Roles Manager Dashboard:** A sleek Host-only role management dashboard to create, edit, customize colors with a color picker, and manage hiearchy assignments.
+* Interactively groups active online members in the sidebar under custom role cards, styling usernames using custom group colors.
+* Allows Hosts to authorize managers ("Yetkili" admins), enabling them to perform P2P channel creations, renames, and deletions synced across all active peers.
+
+### 💬 5. Modern Rich Chat & Collaboration UX
+* **Emoji Reactions:** Interact with messages using 24 premium emojis. Features reaction counts, user tooltips, and custom neon blue glowing borders for reactions added by yourself.
+* **Message Editing & Pinning:** Edit message payloads inline with transition animations. Includes a dedicated golden thumbtack Pin Drawer with quick jump routing (`scrollToMessage`).
+* **@Mention Autocomplete:** Typing `@` in the chat input displays a glassmorphic floating member listing, traversable using keyboard arrow keys. Mentions highlight inside chat logs and trigger a custom sound notification.
+* **Instant Message Search:** Query local logs with debounced searching, instantly highlighting matched terms in gold.
+* **Date Separators:** Chat logs automatically segment messages with clean chronological timelines ("Today", "Yesterday", or "May 24, 2026").
+* **Unread Badges:** Keeps track of active messages using glowing red numerical indicators on channels, direct DMs, and server list headers.
+
+### 📎 6. Drag & Drop Uploads & Inline Media Players
+* **Drag & Drop Files:** Drag any file directly onto the active chat feed to initiate a high-speed direct P2P transfer (15MB limit).
+* **Clipboard Paste (Ctrl+V):** Paste screenshots or copied images directly into the text input to post them instantly.
+* **Inline Media Players:** Renders glassmorphic audio and video preview blocks for `.mp3`, `.wav`, `.mp4`, or `.webm` attachments directly inside chat bubbles, complete with native playback sliders and metadata cards.
+
+### ⌨️ 8. Win32 Low-Level Keyboard Hook (Global Hotkeys)
+* An integrated C# executable (`keylistener.exe`) that runs hidden in the background, utilizing native Win32 keyboard APIs to intercept key events.
+* Allows system-wide global hotkeys for Mic Mute (Alt+M) and Deafen (Alt+D) that function perfectly even when ALCORD is minimized, running in the system tray, or while playing fullscreen games.
+
+---
+
+## 🚀 Technology Stack
+
+* **Core:** HTML5, Vanilla CSS, Vanilla Javascript (with custom TailwindCSS classes and futuristic glassmorphic filters).
+* **Desktop Wrapper:** Electron (featuring fully borderless design, custom frameless titlebar navigation, and interactive system tray integration).
 * **Networking:** PeerJS & WebRTC (Direct Datachannels for Text/Files, MediaStreams for Audio/Video).
-* **Audio Processing:** Web Audio API & AudioWorkletProcessor.
-* **Local Storage:** persistency of servers, channels, roles, settings, friends lists, friend requests, and direct message logs.
+* **Audio Engine:** Web Audio API & AudioWorkletProcessor.
+* **Persistence:** LocalStorage is utilized to persist servers, roles, custom channels, settings, direct DMs, and reciprocal friends lists.
 
 ---
 
-## 🛠️ Kurulum ve Çalıştırma
+## 🛠️ Installation & Running
 
-### Gereksinimler
-* [Node.js](https://nodejs.org/) (v16 veya üzeri tavsiye edilir)
-* Windows İşletim Sistemi (Global kısayol C# hook'u Windows özeldir)
+### Requirements
+* [Node.js](https://nodejs.org/) (v16 or higher recommended)
+* Windows OS (The global keyboard hook relies on Windows-specific Win32 APIs)
 
-### Çalıştırma Adımları
-1. Repoyu bilgisayarınıza kopyalayın:
+### Execution Steps
+1. Clone the repository:
    ```bash
    git clone https://github.com/Alchemei/ALCORD.git
    cd ALCORD
    ```
-2. Bağımlılıkları yükleyin:
+2. Install dependencies:
    ```bash
    npm install
    ```
-3. Birinci Electron profilini (Host/Kullanıcı 1) başlatın:
+3. Launch the first Electron profile (User 1 / Host):
    ```bash
    npm run dev
    ```
-4. İkinci Electron profilini (İzole edilmiştir, Kullanıcı 2) yan yana test etmek için başlatın:
+4. Launch the second Electron profile (Isolated profile, User 2) for local P2P testing:
    ```bash
    npm run dev2
    ```
 
 ---
 
-## 📦 Dağıtım ve Kurulum Dosyası (Setup) Derleme
+## 📦 Packaging & Building Setup Executables
 
-Uygulamanın Windows kurulum dosyasını (`.exe` setup) oluşturmak için aşağıdaki adımları uygulayabilirsiniz:
+To package the application and compile the final, lightweight Windows setup installer `.exe`:
 
-1. Uygulamayı Windows için paketleyin:
+1. Package the application assets:
    ```bash
    npx electron-packager . ALCORD --platform=win32 --arch=x64 --icon=icon.ico --overwrite --ignore="dist" --ignore="ALCORD-win32-x64"
    ```
-2. Inno Setup derleyicisini çalıştırarak setup kurulum dosyasını oluşturun:
+2. Compile the Inno Setup installer file:
    ```powershell
    & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
    ```
-   *Oluşturulan setup dosyası `c:\apps\ALCORD\dist\ALCORD_Setup_New.exe` dizininde yer alacaktır.*
+   *The compiled installer setup will be located in the `c:\apps\ALCORD\dist\ALCORD_Setup_New.exe` directory.*
 
 ---
 
-## 📄 Lisans
+## 📄 License
 
-Bu proje **MIT Lisansı** altında lisanslanmıştır. Daha fazla bilgi için `LICENSE` dosyasına göz atabilirsiniz.
+This project is licensed under the **MIT License**. For more details, see the `LICENSE` file.
