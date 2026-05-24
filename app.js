@@ -71,6 +71,7 @@ let myId = '';
 let myUsername = 'Kullanıcı';
 let myProfilePic = '';
 let peer = null;
+let serverHostPeer = null; // Dedicated Peer instance for virtual server hosting
 
 // Screen Sharing & Camera State
 let localScreenStream = null;
@@ -107,6 +108,10 @@ let currentView = 'home';
 let connections = new Map(); 
 let directConnections = new Map();
 let hostConnection = null; 
+let serverJoinGeneration = 0;
+let hostMigrationTimer = null;
+let serverStateInterval = null;
+let hostStateWatchdogTimer = null; 
 
 let activeServer = {
     id: '',
@@ -114,6 +119,39 @@ let activeServer = {
     channels: [],
     members: new Map() 
 };
+
+function getDefaultServerChannels() {
+    return [
+        { id: 'genel', name: 'genel', type: 'text' },
+        { id: 'tasarim', name: 'tasarım', type: 'text' },
+        { id: 'genel_ses', name: 'Genel Toplantı', type: 'voice' }
+    ];
+}
+
+function getDefaultServerRoles() {
+    return [
+        { id: 'role_owner', name: 'Kurucu', color: '#f59e0b', order: 1 },
+        { id: 'role_admin', name: 'Yönetici', color: '#a855f7', order: 2 },
+        { id: 'role_vip', name: 'VIP', color: '#3b82f6', order: 3 },
+        { id: 'role_member', name: 'Üye', color: '#94a3b8', order: 4 }
+    ];
+}
+
+function normalizeServerChannels(channels) {
+    if (!Array.isArray(channels)) return getDefaultServerChannels();
+    const cleanChannels = channels.filter(ch => ch && ch.id && ch.name && (ch.type === 'text' || ch.type === 'voice'));
+    return cleanChannels.length > 0 ? cleanChannels : getDefaultServerChannels();
+}
+
+function normalizeServerRoles(roles) {
+    return Array.isArray(roles) && roles.length > 0 ? roles : getDefaultServerRoles();
+}
+
+function isCurrentServerPeerError(err) {
+    if (!currentServerId || !currentServerId.startsWith('alcord_srv_')) return false;
+    const message = `${err?.message || ''} ${err?.peer || ''}`;
+    return message.includes(currentServerId);
+}
 
 let activeTextChannelId = 'genel';
 let activeVoiceChannelId = null;
@@ -401,6 +439,59 @@ function initApp() {
     settingsMyId.textContent = myId;
     settingsUsernameInput.value = myUsername;
 
+    // Distributed Server Migration: If an old server was created under myId, migrate it to virtual ID
+    const lastServer = localStorage.getItem('os_last_server');
+    if (lastServer && lastServer === myId) {
+        let virtualServerId = localStorage.getItem('os_my_server_virtual_id');
+        if (!virtualServerId) {
+            const randomString = Math.random().toString(36).substring(2, 9);
+            virtualServerId = 'alcord_srv_' + randomString;
+            localStorage.setItem('os_my_server_virtual_id', virtualServerId);
+        }
+        localStorage.setItem('os_last_server', virtualServerId);
+        
+        // Migrate server configurations
+        const savedChannels = localStorage.getItem('os_my_server_channels');
+        const savedRoles = localStorage.getItem('os_my_server_roles');
+        const myServerName = localStorage.getItem('os_my_server_name') || `${myUsername}'in Ağı`;
+        const myServerIcon = localStorage.getItem('os_my_server_icon') || '';
+        
+        localStorage.setItem(`os_srv_state_${virtualServerId}`, JSON.stringify({
+            name: myServerName,
+            icon: myServerIcon,
+            channels: savedChannels ? JSON.parse(savedChannels) : null,
+            roles: savedRoles ? JSON.parse(savedRoles) : null,
+            ownerId: myId
+        }));
+        
+        // Migrate message histories
+        const keys = Object.keys(localStorage);
+        keys.forEach(k => {
+            if (k.startsWith(`os_msg_hist_${myId}_`)) {
+                const channelId = k.replace(`os_msg_hist_${myId}_`, '');
+                const newKey = `os_msg_hist_${virtualServerId}_${channelId}`;
+                if (!localStorage.getItem(newKey)) {
+                    localStorage.setItem(newKey, localStorage.getItem(k));
+                }
+            }
+        });
+        
+        // Update joined servers array if it contains myId
+        const rawJoined = localStorage.getItem('os_joined_servers');
+        if (rawJoined) {
+            try {
+                let js = JSON.parse(rawJoined);
+                js = js.map(s => {
+                    if (s.id === myId) {
+                        return { id: virtualServerId, name: myServerName, icon: myServerIcon };
+                    }
+                    return s;
+                });
+                localStorage.setItem('os_joined_servers', JSON.stringify(js));
+            } catch(e){}
+        }
+    }
+
     // Load initial status
     const savedStatus = localStorage.getItem('os_my_status') || 'online';
     myStatus = savedStatus;
@@ -545,6 +636,16 @@ function initApp() {
 
     peer.on('error', (err) => {
         console.error('PeerJS Hatası:', err);
+        if (isCurrentServerPeerError(err)) {
+            console.log("[ALCORD Distributed] Server host error. Retrying in 2 seconds...");
+            const retryGen = serverJoinGeneration;
+            setTimeout(() => {
+                if (retryGen === serverJoinGeneration && currentServerId) {
+                    tryBecomeHost(currentServerId, serverJoinGeneration);
+                }
+            }, 2000);
+            return;
+        }
         if (err.type === 'peer-not-found' || err.type === 'unavailable-id') {
             showToast('Bağlantı başarısız: Hedef ağ bulunamadı veya çevrimdışı.', 'error');
             renderHome();
@@ -717,18 +818,55 @@ function handleClientConnection(conn) {
     });
     conn.on('data', (data) => {
         if (data.type === 'intro') {
-            const savedRoleId = serverMemberRoles.get(conn.peer) || 'role_member';
-            const isPeerAdmin = savedRoleId === 'role_admin' || serverAdminIds.has(conn.peer);
-            const actualRoleId = isPeerAdmin ? 'role_admin' : savedRoleId;
+            // Update ownerId if the connecting peer is the original creator
+            if (data.isCreator) {
+                activeServer.ownerId = conn.peer;
+                saveServerStateLocal();
+            }
+
+            const isOwner = conn.peer === activeServer.ownerId;
+
+            // Distributed Server Handover: If true owner connects, yield host role to them
+            if (activeServer.ownerId && isOwner && myId !== activeServer.ownerId) {
+                console.log(`[ALCORD Distributed] Owner ${conn.peer} has joined. Yielding Host role...`);
+                conn.send({ type: 'yield-host' });
+                announceHostShutdown();
+                setTimeout(() => {
+                    destroyServerHostPeerSilently();
+                    isHost = false;
+                    setTimeout(() => {
+                        if (currentServerId) {
+                            joinServer(currentServerId);
+                        }
+                    }, 5000); // Wait 5s (increased from 4s) to allow Creator to fully boot as Host
+                }, 200); // 200ms is enough to transmit the yield-host packet
+                return;
+            }
+
+            const savedRoleId = isOwner ? 'role_owner' : (serverMemberRoles.get(conn.peer) || 'role_member');
+            const isPeerAdmin = isOwner || savedRoleId === 'role_admin' || serverAdminIds.has(conn.peer);
+            const actualRoleId = isOwner ? 'role_owner' : (isPeerAdmin ? 'role_admin' : savedRoleId);
             
             activeServer.members.set(conn.peer, { 
                 username: data.username, 
                 profilePic: data.profilePic || '', 
                 voiceChannelId: null, 
                 status: data.status || 'online',
-                role: isPeerAdmin ? 'admin' : 'member',
+                role: isOwner ? 'owner' : (isPeerAdmin ? 'admin' : 'member'),
                 roleId: actualRoleId
             });
+            
+            // Direct State Transmission: Send the current state directly to the new client immediately
+            // to ensure they receive it without any synchronization delay.
+            conn.send({
+                type: 'server-state',
+                name: activeServer.name,
+                icon: activeServer.icon || '',
+                channels: activeServer.channels,
+                roles: activeServer.roles || [],
+                members: Array.from(activeServer.members.entries()).map(([id, m]) => ({id, ...m}))
+            });
+
             broadcastServerState();
             addSystemMessage(`${data.username} ağa katıldı.`, 'genel');
             playTone('server-join');
@@ -969,191 +1107,431 @@ function addSystemMessage(text, channelId) {
     if(activeTextChannelId === channelId) renderMessages();
 }
 
-function joinServer(hostId) {
-    if(hostId === myId) return createServer();
-    if(hostConnection) hostConnection.close();
+// Distributed Server Helper Functions
+function clearHostMigrationTimer() {
+    if (hostMigrationTimer) {
+        clearTimeout(hostMigrationTimer);
+        hostMigrationTimer = null;
+    }
+}
+
+function clearHostStateWatchdog() {
+    if (hostStateWatchdogTimer) {
+        clearTimeout(hostStateWatchdogTimer);
+        hostStateWatchdogTimer = null;
+    }
+}
+
+function stopServerStateInterval() {
+    if (serverStateInterval) {
+        clearInterval(serverStateInterval);
+        serverStateInterval = null;
+    }
+}
+
+function closeHostConnectionSilently() {
+    if (hostConnection) {
+        hostConnection._alcordIntentClose = true;
+        try { hostConnection.close(); } catch(e){}
+        hostConnection = null;
+    }
+}
+
+function destroyServerHostPeerSilently() {
+    if (serverHostPeer) {
+        try { serverHostPeer.destroy(); } catch(e){}
+        serverHostPeer = null;
+    }
+}
+
+function armHostStateWatchdog(conn, serverId, joinGeneration) {
+    clearHostStateWatchdog();
+    hostStateWatchdogTimer = setTimeout(() => {
+        if (joinGeneration !== serverJoinGeneration || hostConnection !== conn) return;
+        console.warn(`[ALCORD Distributed] Host watchdog timeout for ${serverId}. Triggering migration...`);
+        closeHostConnectionSilently();
+        scheduleHostMigration(serverId, joinGeneration);
+    }, 12000);
+}
+
+function scheduleHostMigration(serverId, joinGeneration) {
+    if (joinGeneration !== serverJoinGeneration || currentServerId !== serverId) return;
+    clearHostMigrationTimer();
+    
+    const migrationDelay = 1500 + Math.random() * 3000;
+    console.log(`[ALCORD Distributed] Scheduling host migration for ${serverId} in ${migrationDelay.toFixed(0)}ms...`);
+    
+    hostMigrationTimer = setTimeout(() => {
+        if (joinGeneration !== serverJoinGeneration || currentServerId !== serverId) return;
+        console.log(`[ALCORD Distributed] Host migration timer fired. Attempting to become Host...`);
+        tryBecomeHost(serverId, joinGeneration);
+    }, migrationDelay);
+}
+
+function startServerStateInterval() {
+    stopServerStateInterval();
+    serverStateInterval = setInterval(() => {
+        if (isHost && currentServerId) {
+            broadcastServerState();
+        } else {
+            stopServerStateInterval();
+        }
+    }, 5000);
+}
+
+function announceHostShutdown() {
+    if (!isHost) return;
+    console.log("[ALCORD Distributed] Announcing host shutdown to all clients...");
+    connections.forEach(conn => {
+        if (conn.open) {
+            try { conn.send({ type: 'host-shutdown' }); } catch(e){}
+        }
+    });
+}
+
+function loadServerStateFromLocal(serverId) {
+    try {
+        const rawState = localStorage.getItem(`os_srv_state_${serverId}`);
+        if (rawState) {
+            const parsed = JSON.parse(rawState);
+            activeServer = {
+                id: serverId,
+                name: parsed.name || 'Dağıtık Ağ',
+                icon: parsed.icon || '',
+                channels: normalizeServerChannels(parsed.channels),
+                roles: normalizeServerRoles(parsed.roles),
+                ownerId: parsed.ownerId || serverId,
+                members: new Map()
+            };
+            return true;
+        }
+    } catch(e) {
+        console.error("[ALCORD Distributed] Error loading server state from local storage:", e);
+    }
+    return false;
+}
+
+function saveServerStateLocal() {
+    if (!currentServerId) return;
+    try {
+        localStorage.setItem(`os_srv_state_${currentServerId}`, JSON.stringify({
+            name: activeServer.name,
+            icon: activeServer.icon || '',
+            channels: activeServer.channels,
+            roles: activeServer.roles || [],
+            ownerId: activeServer.ownerId
+        }));
+    } catch(e) {
+        console.error("[ALCORD Distributed] Error saving server state to local storage:", e);
+    }
+}
+
+// Client-First Connection Architecture Implementation
+function joinServer(serverId) {
+    const joinGeneration = ++serverJoinGeneration;
+    clearHostMigrationTimer();
+    clearHostStateWatchdog();
+    stopServerStateInterval();
+    closeHostConnectionSilently();
+    destroyServerHostPeerSilently();
+    
+    currentServerId = serverId;
+    messages = [];
+    speakingUsers.clear();
+    loadMessagesForActiveChannel();
+    
+    showToast('Sunucu bağlantısı kuruluyor...', 'info');
+    connectAsClient(serverId, joinGeneration);
+}
+
+function connectAsClient(serverId, joinGeneration) {
+    if (joinGeneration !== serverJoinGeneration || currentServerId !== serverId) return;
     
     isHost = false;
-    currentServerId = hostId;
-    messages = [];
+    stopServerStateInterval();
+    destroyServerHostPeerSilently();
     
-    showToast('Ağa bağlanılıyor...', 'info');
-    hostConnection = peer.connect(hostId, { reliable: true });
-
-    hostConnection.on('open', () => {
-        localStorage.setItem('os_last_server', hostId);
+    console.log(`[ALCORD Distributed] Connecting to ${serverId} as Client...`);
+    const conn = peer.connect(serverId, { reliable: true });
+    hostConnection = conn;
+    
+    let connTimeout = setTimeout(() => {
+        if (joinGeneration !== serverJoinGeneration || hostConnection !== conn) return;
+        console.log(`[ALCORD Distributed] Client connection to ${serverId} timed out. Trying to become Host...`);
+        conn._alcordIntentClose = true;
+        try { conn.close(); } catch(e){}
+        hostConnection = null;
+        tryBecomeHost(serverId, joinGeneration);
+    }, 4500);
+    
+    conn.on('open', () => {
+        clearTimeout(connTimeout);
+        if (joinGeneration !== serverJoinGeneration || hostConnection !== conn || currentServerId !== serverId) {
+            conn._alcordIntentClose = true;
+            try { conn.close(); } catch(e){}
+            return;
+        }
+        const isCreator = serverId === localStorage.getItem('os_my_server_virtual_id');
+        localStorage.setItem('os_last_server', serverId);
         closeModal('serverModal');
-        hostConnection.send({ type: 'intro', username: myUsername, profilePic: myProfilePic, status: myStatus });
-        showToast('Bağlantı sağlandı.', 'success');
+        conn.send({ type: 'intro', username: myUsername, profilePic: myProfilePic, status: myStatus, isCreator });
+        armHostStateWatchdog(conn, serverId, joinGeneration);
+        showToast('Bağlantı sağlandı (Client).', 'success');
     });
-
-    hostConnection.on('data', (data) => {
-        if(data.type === 'server-state') {
-            const oldMembers = new Map(activeServer.members);
-            activeServer.name = data.name;
-            activeServer.icon = data.icon || '';
-            activeServer.channels = data.channels;
-            activeServer.roles = data.roles || [];
-            activeServer.members = new Map(data.members.map(m => [m.id, {
-                username: m.username, 
-                profilePic: m.profilePic || '', 
-                voiceChannelId: m.voiceChannelId, 
-                status: m.status || 'online', 
-                role: m.role || 'member',
-                roleId: m.roleId || (m.role === 'owner' ? 'role_owner' : (m.role === 'admin' ? 'role_admin' : 'role_member'))
-            }]));
-            
-            // Check if active channels were deleted
-            const textExists = activeServer.channels.some(c => c.id === activeTextChannelId && c.type === 'text');
-            if (!textExists && !activeDMUserId) {
-                const firstText = activeServer.channels.find(c => c.type === 'text');
-                activeTextChannelId = firstText ? firstText.id : 'genel';
-            }
-            if (activeVoiceChannelId) {
-                const voiceExists = activeServer.channels.some(c => c.id === activeVoiceChannelId && c.type === 'voice');
-                if (!voiceExists) {
-                    leaveVoiceChannel();
-                    showToast("Bulunduğunuz ses kanalı silindi.", "warning");
-                }
-            }
-            
-            if (oldMembers.size > 0 && activeServer.members.size > oldMembers.size) {
-                let someoneNew = false;
-                activeServer.members.forEach((member, id) => {
-                    if (id !== myId && !oldMembers.has(id)) {
-                        someoneNew = true;
+    
+    conn.on('data', (data) => {
+        try {
+            if (joinGeneration !== serverJoinGeneration || hostConnection !== conn || currentServerId !== serverId) return;
+            if (data.type === 'yield-host') {
+                console.log("[ALCORD Distributed] Host has yielded. Becoming Host...");
+                closeHostConnectionSilently();
+                setTimeout(() => {
+                    if (joinGeneration === serverJoinGeneration && currentServerId === serverId) {
+                        tryBecomeHost(serverId, joinGeneration);
                     }
-                });
-                if (someoneNew) {
-                    playTone('server-join');
-                }
+                }, 2500); // Wait 2.5s (increased from 1.5s) to allow PeerJS cloud to unregister old socket
+                return;
             }
-
-            if (activeVoiceChannelId) {
-                activeServer.members.forEach((member, id) => {
-                    if (id !== myId) {
-                        const oldMember = oldMembers.get(id);
-                        const oldChannel = oldMember ? oldMember.voiceChannelId : null;
-                        const newChannel = member.voiceChannelId;
-                        
-                        if (newChannel === activeVoiceChannelId && oldChannel !== activeVoiceChannelId) {
-                            playTone('join');
-                            if (localScreenStream && !screenCalls.has(id)) {
-                                const call = peer.call(id, localScreenStream, { 
-                                    metadata: { type: 'screen-share', username: myUsername } 
-                                });
-                                screenCalls.set(id, call);
-                            }
-                            if (localCameraStream && !cameraCalls.has(id)) {
-                                const call = peer.call(id, localCameraStream, {
-                                    metadata: { type: 'camera-share', username: myUsername }
-                                });
-                                cameraCalls.set(id, call);
-                            }
-                        } else if (oldChannel === activeVoiceChannelId && newChannel !== activeVoiceChannelId) {
-                            playTone('leave');
+            if (data.type === 'host-shutdown') {
+                console.log("[ALCORD Distributed] Host announced shutdown. Attempting Host Migration...");
+                clearHostStateWatchdog();
+                conn._alcordIntentClose = true;
+                try { conn.close(); } catch(e){}
+                if (hostConnection === conn) hostConnection = null;
+                scheduleHostMigration(serverId, joinGeneration);
+                return;
+            }
+            
+            if (data.type === 'server-state') {
+                armHostStateWatchdog(conn, serverId, joinGeneration);
+                const oldMembers = new Map(activeServer.members);
+                const channels = normalizeServerChannels(data.channels);
+                const roles = normalizeServerRoles(data.roles);
+                activeServer.name = data.name;
+                activeServer.icon = data.icon || '';
+                activeServer.channels = channels;
+                activeServer.roles = roles;
+                activeServer.ownerId = data.ownerId;
+                
+                if (Array.isArray(data.members)) {
+                    activeServer.members = new Map(data.members.map(m => [m.id, {
+                        username: m.username || 'Kullanıcı', 
+                        profilePic: m.profilePic || '', 
+                        voiceChannelId: m.voiceChannelId, 
+                        status: m.status || 'online', 
+                        role: m.role || 'member',
+                        roleId: m.roleId || (m.role === 'owner' ? 'role_owner' : (m.role === 'admin' ? 'role_admin' : 'role_member'))
+                    }]));
+                } else {
+                    console.warn("[ALCORD Distributed] data.members is not an array:", data.members);
+                }
+                
+                localStorage.setItem(`os_srv_state_${serverId}`, JSON.stringify({
+                    name: data.name,
+                    icon: data.icon || '',
+                    channels,
+                    roles,
+                    ownerId: data.ownerId
+                }));
+                
+                const textExists = activeServer.channels.some(c => c.id === activeTextChannelId && c.type === 'text');
+                if (!textExists && !activeDMUserId) {
+                    const firstText = activeServer.channels.find(c => c.type === 'text');
+                    activeTextChannelId = firstText ? firstText.id : 'genel';
+                }
+                if (activeVoiceChannelId) {
+                    const voiceExists = activeServer.channels.some(c => c.id === activeVoiceChannelId && c.type === 'voice');
+                    if (!voiceExists) {
+                        leaveVoiceChannel();
+                        showToast("Bulunduğunuz ses kanalı silindi.", "warning");
+                    }
+                }
+                
+                if (oldMembers.size > 0 && activeServer.members.size > oldMembers.size) {
+                    let someoneNew = false;
+                    activeServer.members.forEach((member, id) => {
+                        if (id !== myId && !oldMembers.has(id)) {
+                            someoneNew = true;
                         }
+                    });
+                    if (someoneNew) {
+                        playTone('server-join');
                     }
-                });
-            }
-            
-            addJoinedServer(currentServerId, data.name, data.icon);
+                }
 
-            if(!activeTextChannelId || !activeServer.channels.find(c => c.id === activeTextChannelId)) {
-                const firstText = activeServer.channels.find(c => c.type === 'text');
-                if(firstText) activeTextChannelId = firstText.id;
+                if (activeVoiceChannelId) {
+                    activeServer.members.forEach((member, id) => {
+                        if (id !== myId) {
+                            const oldMember = oldMembers.get(id);
+                            const oldChannel = oldMember ? oldMember.voiceChannelId : null;
+                            const newChannel = member.voiceChannelId;
+                            
+                            if (newChannel === activeVoiceChannelId && oldChannel !== activeVoiceChannelId) {
+                                playTone('join');
+                                if (localScreenStream && !screenCalls.has(id)) {
+                                    const call = peer.call(id, localScreenStream, { 
+                                        metadata: { type: 'screen-share', username: myUsername } 
+                                    });
+                                    screenCalls.set(id, call);
+                                }
+                                if (localCameraStream && !cameraCalls.has(id)) {
+                                    const call = peer.call(id, localCameraStream, {
+                                        metadata: { type: 'camera-share', username: myUsername }
+                                    });
+                                    cameraCalls.set(id, call);
+                                }
+                            } else if (oldChannel === activeVoiceChannelId && newChannel !== activeVoiceChannelId) {
+                                playTone('leave');
+                            }
+                        }
+                    });
+                }
+                
+                addJoinedServer(currentServerId, data.name, data.icon);
+
+                if (!activeTextChannelId || !activeServer.channels.find(c => c.id === activeTextChannelId)) {
+                    const firstText = activeServer.channels.find(c => c.type === 'text');
+                    if (firstText) activeTextChannelId = firstText.id;
+                }
+                renderServerView();
             }
-            renderServerView();
-        }
-        else if (data.type === 'message') {
-            if (data.senderId === myId) return;
-            messages.push(data);
-            persistMessage(data);
-            const toneType = checkIsMentioned(data.text) ? 'mention' : 'msg-receive';
-            playTone(toneType);
-            
-            if(activeTextChannelId === data.channelId) {
-                renderMessages();
-            } else {
-                incrementUnread(data.channelId);
-                renderChannelPanel();
-                renderGuildBar();
-                const ch = activeServer.channels.find(c => c.id === data.channelId);
-                const chName = ch ? ch.name : 'genel';
-                triggerNotification(`#${chName} Kanalında Yeni Mesaj`, `${data.senderName}: ${data.text || 'Dosya paylaştı.'}`);
+            else if (data.type === 'message') {
+                if (data.senderId === myId) return;
+                messages.push(data);
+                persistMessage(data);
+                const toneType = checkIsMentioned(data.text) ? 'mention' : 'msg-receive';
+                playTone(toneType);
+                
+                if (activeTextChannelId === data.channelId) {
+                    renderMessages();
+                } else {
+                    incrementUnread(data.channelId);
+                    renderChannelPanel();
+                    renderGuildBar();
+                    const ch = activeServer.channels.find(c => c.id === data.channelId);
+                    const chName = ch ? ch.name : 'genel';
+                    triggerNotification(`#${chName} Kanalında Yeni Mesaj`, `${data.senderName}: ${data.text || 'Dosya paylaştı.'}`);
+                }
             }
+            else if (data.type === 'typing') {
+                handleTypingReceived(data.senderId, data.isTyping, data.channelId);
+            }
+            else if (data.type === 'delete-message') {
+                deleteLocalMessage(data.messageId, data.channelId);
+            }
+            else if (data.type === 'reaction') {
+                handleReactionPacket(data);
+            }
+            else if (data.type === 'edit-message') {
+                handleEditMessagePacket(data);
+            }
+            else if (data.type === 'pin-message') {
+                handlePinMessagePacket(data);
+            }
+        } catch (dataErr) {
+            console.error("[ALCORD Distributed] Error processing received data packet:", dataErr);
         }
-        else if (data.type === 'typing') {
-            handleTypingReceived(data.senderId, data.isTyping, data.channelId);
-        }
-        else if (data.type === 'delete-message') {
-            deleteLocalMessage(data.messageId, data.channelId);
-        }
-        else if (data.type === 'reaction') {
-            handleReactionPacket(data);
-        }
-        else if (data.type === 'edit-message') {
-            handleEditMessagePacket(data);
-        }
-        else if (data.type === 'pin-message') {
-            handlePinMessagePacket(data);
-        }
-        else if (data.type === 'dm') {
-            const senderId = data.senderId;
-            const dmRoomId = senderId === myId ? data.targetId : senderId;
-            
-            const msg = {
-                id: data.id,
-                channelId: dmRoomId,
-                senderId: data.senderId,
-                senderName: data.senderName,
-                text: data.text,
-                file: data.file,
-                time: data.time
+    });
+    
+    conn.on('close', () => {
+        clearHostStateWatchdog();
+        if (conn._alcordIntentClose || hostConnection !== conn || joinGeneration !== serverJoinGeneration) return;
+        hostConnection = null;
+        console.log(`[ALCORD Distributed] Host connection closed. Attempting Host Migration...`);
+        scheduleHostMigration(serverId, joinGeneration);
+    });
+    
+    conn.on('error', (connErr) => {
+        console.error("[ALCORD Distributed] hostConnection error:", connErr);
+        clearHostStateWatchdog();
+        if (conn._alcordIntentClose || hostConnection !== conn || joinGeneration !== serverJoinGeneration) return;
+        hostConnection = null;
+        scheduleHostMigration(serverId, joinGeneration);
+    });
+}
+
+function tryBecomeHost(serverId, joinGeneration) {
+    if (joinGeneration !== serverJoinGeneration || currentServerId !== serverId) return;
+    
+    isHost = true;
+    console.log(`[ALCORD Distributed] Attempting to register serverHostPeer for ID: ${serverId}`);
+    
+    serverHostPeer = new Peer(serverId, {
+        host: '0.peerjs.com',
+        port: 443,
+        secure: true,
+        config: { 'iceServers': [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] }
+    });
+    
+    serverHostPeer.on('open', (id) => {
+        if (joinGeneration !== serverJoinGeneration || currentServerId !== serverId) return;
+        console.log(`[ALCORD Distributed] We successfully registered as the Host for: ${serverId}`);
+        isHost = true;
+        
+        const hasLoaded = loadServerStateFromLocal(serverId);
+        if (!hasLoaded) {
+            const isCreator = serverId === localStorage.getItem('os_my_server_virtual_id');
+            activeServer = {
+                id: serverId,
+                name: isCreator ? (localStorage.getItem('os_my_server_name') || `${myUsername}'in Ağı`) : 'Dağıtık Ağ',
+                icon: isCreator ? (localStorage.getItem('os_my_server_icon') || '') : '',
+                roles: [
+                    { id: 'role_owner', name: 'Kurucu', color: '#f59e0b', order: 1 },
+                    { id: 'role_admin', name: 'Yönetici', color: '#a855f7', order: 2 },
+                    { id: 'role_vip', name: 'VIP', color: '#3b82f6', order: 3 },
+                    { id: 'role_member', name: 'Üye', color: '#94a3b8', order: 4 }
+                ],
+                channels: [
+                    { id: 'genel', name: 'genel', type: 'text' },
+                    { id: 'tasarim', name: 'tasarım', type: 'text' },
+                    { id: 'genel_ses', name: 'Genel Toplantı', type: 'voice' }
+                ],
+                ownerId: isCreator ? myId : serverId,
+                members: new Map()
             };
-            
-            addJoinedDM(dmRoomId, data.senderName);
-            
-            const toneType = checkIsMentioned(data.text) ? 'mention' : 'msg-receive';
-            playTone(toneType);
-            
-            if (activeDMUserId === dmRoomId) {
-                messages.push(msg);
-                persistMessage(msg);
-                renderMessages();
-            } else {
-                messages.push(msg);
-                persistMessage(msg);
-                incrementUnread(dmRoomId);
-                renderChannelPanel();
-                renderGuildBar();
-                triggerNotification(`Yeni DM: ${data.senderName}`, data.text || 'Bir dosya gönderdi.');
-            }
         }
-        else if (data.type === 'friend-added') {
-            handleIncomingFriendRequest(data.senderId, data.senderName);
-        }
-        else if (data.type === 'friend-accept') {
-            handleIncomingFriendAccept(data.senderId, data.senderName);
-        }
-        else if (data.type === 'friend-decline') {
-            handleIncomingFriendDecline(data.senderId);
-        }
-        else if (data.type === 'error') {
-            showToast(data.message, 'error');
-            renderHome();
-        }
+        activeServer.roles = normalizeServerRoles(activeServer.roles);
+        activeServer.channels = normalizeServerChannels(activeServer.channels);
+        
+        activeServer.members.set(myId, { 
+            username: myUsername, 
+            profilePic: myProfilePic, 
+            voiceChannelId: null, 
+            role: myId === activeServer.ownerId ? 'owner' : 'member',
+            roleId: myId === activeServer.ownerId ? 'role_owner' : 'role_member'
+        });
+        
+        connections.clear();
+        
+        serverHostPeer.on('connection', (conn) => {
+            handleClientConnection(conn);
+        });
+        
+        localStorage.setItem('os_last_server', serverId);
+        closeModal('serverModal');
+        
+        renderServerView();
+        broadcastServerState();
+        startServerStateInterval();
+        showToast('Sunucu başlatıldı (Host).', 'success');
     });
-
-    hostConnection.on('error', (err) => {
-        console.error('Ağ bağlantı hatası:', err);
-        showToast('Ağ bağlantısı kurulamadı veya koptu.', 'error');
-        renderHome();
-    });
-
-    hostConnection.on('close', () => {
-        showToast('Ağ bağlantısı koptu.', 'error');
-        renderHome();
+    
+    serverHostPeer.on('error', (err) => {
+        if (joinGeneration !== serverJoinGeneration || currentServerId !== serverId) return;
+        if (err.type === 'unavailable-id') {
+            console.log(`[ALCORD Distributed] Someone is already hosting ${serverId}. Retrying as Client in 2 seconds...`);
+            isHost = false;
+            stopServerStateInterval();
+            destroyServerHostPeerSilently();
+            setTimeout(() => {
+                if (joinGeneration === serverJoinGeneration && currentServerId === serverId) {
+                    connectAsClient(serverId, joinGeneration);
+                }
+            }, 2000);
+        } else {
+            console.error("[ALCORD Distributed] serverHostPeer connection error:", err);
+            showToast('Bağlantı hatası: ' + err.message, 'error');
+        }
     });
 }
 
@@ -1192,8 +1570,21 @@ function sendChatMessage(text, fileObj = null) {
 
 function updateVoiceState(channelId) {
     activeVoiceChannelId = channelId;
-    const member = activeServer.members.get(myId);
-    if(member) member.voiceChannelId = channelId;
+    let member = activeServer.members.get(myId);
+    if (!member) {
+        // Defensive fallback: Dynamically insert ourselves if not yet synced from host
+        member = {
+            username: myUsername,
+            profilePic: myProfilePic,
+            voiceChannelId: channelId,
+            status: myStatus,
+            role: 'member',
+            roleId: 'role_member'
+        };
+        activeServer.members.set(myId, member);
+    } else {
+        member.voiceChannelId = channelId;
+    }
     renderChannelPanel();
     
     if(isHost) {

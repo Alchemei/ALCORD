@@ -86,6 +86,15 @@ Featuring an elegant, state-of-the-art **Glassmorphism** design system, ALCORD i
 
 ---
 
+## ☁️ 24/7 Headless Server Hosting (Bulut Sunucu)
+
+ALCORD possesses a custom, lightweight Puppeteer-driven **Headless Host Coordinator (`headless-host.js`)** which allows you to run your server 24/7 completely headlessly on any Linux or Windows VPS (e.g. AWS, Google Cloud, Oracle Cloud) with extremely minimal footprint (~20MB RAM).
+
+To learn how to host your ALCORD server 24/7 on a cloud VPS:
+*   Turkish Setup Guide: Check out [vps_deployment.md](vps_deployment.md) for step-by-step instructions.
+
+---
+
 ## 📦 Packaging & Building Setup Executables
 
 To package the application and compile the final, lightweight Windows setup installer `.exe`:
