@@ -1,5 +1,7 @@
 const puppeteer = require('puppeteer');
 const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 console.log(`
 =====================================================
@@ -7,7 +9,80 @@ console.log(`
 =====================================================
 `);
 
-// 1. Start the local Express web server (server.js)
+// 1. Storage Configuration for Host Archiving
+const ARCHIVE_FILE = path.join(__dirname, 'room-archive.json');
+
+/**
+ * Loads the chat history archive from disk.
+ * Returns empty array if file does not exist or is corrupted.
+ */
+function loadArchive() {
+    try {
+        if (!fs.existsSync(ARCHIVE_FILE)) {
+            fs.writeFileSync(ARCHIVE_FILE, '[]', 'utf8');
+            return [];
+        }
+        const data = fs.readFileSync(ARCHIVE_FILE, 'utf8').trim();
+        if (!data) return [];
+        return JSON.parse(data);
+    } catch (e) {
+        console.error('[Archive Error] JSON file is corrupted or failed to read, recovering with empty array:', e);
+        return [];
+    }
+}
+
+/**
+ * Saves the archive array atomically to disk using a temp file.
+ */
+function saveArchive(archive) {
+    const tmpFile = ARCHIVE_FILE + '.tmp';
+    try {
+        const json = JSON.stringify(archive, null, 2);
+        // Atomic write: write to temp file then rename/replace
+        fs.writeFileSync(tmpFile, json, 'utf8');
+        fs.renameSync(tmpFile, ARCHIVE_FILE);
+        return true;
+    } catch (e) {
+        console.error('[Archive Error] Atomic write failed:', e);
+        if (fs.existsSync(tmpFile)) {
+            try { fs.unlinkSync(tmpFile); } catch(err){}
+        }
+        return false;
+    }
+}
+
+/**
+ * Appends a single message to the archive. Prevents duplicate storage.
+ */
+function appendMessageToArchive(msg) {
+    if (!msg || (!msg.id && !msg.messageId)) return false;
+    const msgId = msg.id || msg.messageId;
+    const archive = loadArchive();
+    
+    // Check for duplicate messages
+    const exists = archive.some(m => (m.id || m.messageId) === msgId);
+    if (exists) {
+        return false;
+    }
+    
+    archive.push(msg);
+    const success = saveArchive(archive);
+    if (success) {
+        console.log(`[Archive] Successfully archived message ${msgId} from ${msg.senderName || 'Anonymous'}.`);
+    }
+    return success;
+}
+
+/**
+ * Retrieves the last N messages from the archive.
+ */
+function getRecentMessages(limit) {
+    const archive = loadArchive();
+    if (!limit || limit <= 0) return archive;
+    return archive.slice(-limit);
+}
+
+// 2. Start the local Express web server (server.js)
 console.log('📡 Launching Express Web Server...');
 const webServer = spawn('node', ['server.js']);
 
@@ -20,7 +95,7 @@ webServer.stderr.on('data', (data) => {
     console.error(`[Web Server Error] ${data.toString().trim()}`);
 });
 
-// 2. Start Puppeteer in headless mode to open ALCORD and act as the permanent Host
+// 3. Start Puppeteer in headless mode to open ALCORD and act as the permanent Host
 setTimeout(async () => {
     console.log('\n🚀 Starting headless browser engine (Chromium)...');
     try {
@@ -36,6 +111,22 @@ setTimeout(async () => {
         });
 
         const page = await browser.newPage();
+
+        // Expose Node archiving functions to browser context prior to navigation
+        await page.exposeFunction('loadArchiveNode', () => {
+            return loadArchive();
+        });
+        await page.exposeFunction('saveArchiveNode', (archive) => {
+            return saveArchive(archive);
+        });
+        await page.exposeFunction('appendMessageToArchiveNode', (msg) => {
+            return appendMessageToArchive(msg);
+        });
+        await page.exposeFunction('getRecentMessagesNode', (limit) => {
+            return getRecentMessages(limit);
+        });
+
+        console.log('[Headless Host] Exposed Node FS archive functions to page context.');
 
         // Redirect browser console logs to the Node.js terminal for easy debugging
         page.on('console', msg => {

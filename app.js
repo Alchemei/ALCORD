@@ -178,10 +178,14 @@ let activeTypingUsers = new Set(); // peerIds of users currently typing in the a
 
 // Speaking Indicator states
 let localVolumeAnalyser = null;
+let localAnalyserFilterNode = null;
 let remoteAnalysers = new Map(); // peerId -> AnalyserNode
 let speakingUsers = new Set(); // peerIds of currently speaking users
 let speakingStartTimes = new Map(); // peerId -> timestamp when loud voice activity started
 let speakingIntervalId = null;
+let localGateLastSpeechTime = 0;
+let localGateRmsHistory = [];
+let localGateNoiseFloor = 0.005;
 
 // Friends & P2P Direct Calling State
 let friends = [];
@@ -773,23 +777,37 @@ function createServer() {
         if (rawRoles) savedRoles = JSON.parse(rawRoles);
     } catch(e){}
     
-    // Save state under the virtual server ID to let joinServer bootstrap it
+    const defaultChannels = savedChannels || [
+        { id: 'genel', name: 'genel', type: 'text' },
+        { id: 'tasarim', name: 'tasarım', type: 'text' },
+        { id: 'genel_ses', name: 'Genel Toplantı', type: 'voice' }
+    ];
+    const defaultRoles = savedRoles || [
+        { id: 'role_owner', name: 'Kurucu', color: '#f59e0b', order: 1 },
+        { id: 'role_admin', name: 'Yönetici', color: '#a855f7', order: 2 },
+        { id: 'role_vip', name: 'VIP', color: '#3b82f6', order: 3 },
+        { id: 'role_member', name: 'Üye', color: '#94a3b8', order: 4 }
+    ];
+
+    // Save state under the virtual server ID in localStorage
     localStorage.setItem(`os_srv_state_${virtualServerId}`, JSON.stringify({
         name: myServerName,
         icon: myServerIcon,
-        channels: savedChannels || [
-            { id: 'genel', name: 'genel', type: 'text' },
-            { id: 'tasarim', name: 'tasarım', type: 'text' },
-            { id: 'genel_ses', name: 'Genel Toplantı', type: 'voice' }
-        ],
-        roles: savedRoles || [
-            { id: 'role_owner', name: 'Kurucu', color: '#f59e0b', order: 1 },
-            { id: 'role_admin', name: 'Yönetici', color: '#a855f7', order: 2 },
-            { id: 'role_vip', name: 'VIP', color: '#3b82f6', order: 3 },
-            { id: 'role_member', name: 'Üye', color: '#94a3b8', order: 4 }
-        ],
+        channels: defaultChannels,
+        roles: defaultRoles,
         ownerId: myId
     }));
+
+    // Save to IndexedDB asynchronously
+    window.dbManager.saveRoomSettings(virtualServerId, {
+        name: myServerName,
+        icon: myServerIcon,
+        channels: defaultChannels,
+        ownerId: myId
+    }).catch(err => console.error("Could not save server settings on creation:", err));
+
+    window.dbManager.saveRole(virtualServerId, defaultRoles)
+        .catch(err => console.error("Could not save server roles on creation:", err));
     
     localStorage.setItem('os_last_server', virtualServerId);
     addJoinedServer(virtualServerId, myServerName);
@@ -810,12 +828,12 @@ function handleClientConnection(conn) {
         console.error("Client connection error:", err);
         connections.delete(conn.peer);
     });
-    conn.on('data', (data) => {
+    conn.on('data', async (data) => {
         if (data.type === 'intro') {
             // Update ownerId if the connecting peer is the original creator
             if (data.isCreator) {
                 activeServer.ownerId = conn.peer;
-                saveServerStateLocal();
+                await saveServerStateLocal();
             }
 
             const isOwner = conn.peer === activeServer.ownerId;
@@ -864,6 +882,11 @@ function handleClientConnection(conn) {
             broadcastServerState();
             addSystemMessage(`${data.username} ağa katıldı.`, 'genel');
             playTone('server-join');
+
+            // Headless Host Late Join History Sync Protocol Hook
+            if (typeof window.getRecentMessagesNode === 'function') {
+                triggerLateJoinSync(conn);
+            }
         } 
         else if (data.type === 'status-update') {
             const member = activeServer.members.get(conn.peer);
@@ -1224,40 +1247,42 @@ function announceHostShutdown() {
     });
 }
 
-function loadServerStateFromLocal(serverId) {
+async function loadServerStateFromLocal(serverId) {
     try {
-        const rawState = localStorage.getItem(`os_srv_state_${serverId}`);
-        if (rawState) {
-            const parsed = JSON.parse(rawState);
+        const settings = await window.dbManager.getRoomSettings(serverId);
+        if (settings) {
+            const roles = await window.dbManager.getRoles(serverId);
             activeServer = {
                 id: serverId,
-                name: parsed.name || 'Dağıtık Ağ',
-                icon: parsed.icon || '',
-                channels: normalizeServerChannels(parsed.channels),
-                roles: normalizeServerRoles(parsed.roles),
-                ownerId: parsed.ownerId || serverId,
+                name: settings.name || 'Dağıtık Ağ',
+                icon: settings.icon || '',
+                channels: normalizeServerChannels(settings.channels),
+                roles: normalizeServerRoles(roles.length ? roles : null),
+                ownerId: settings.ownerId || serverId,
                 members: new Map()
             };
             return true;
         }
     } catch(e) {
-        console.error("[ALCORD Distributed] Error loading server state from local storage:", e);
+        console.error("[ALCORD Distributed] Error loading server state from IndexedDB:", e);
     }
     return false;
 }
 
-function saveServerStateLocal() {
+async function saveServerStateLocal() {
     if (!currentServerId) return;
     try {
-        localStorage.setItem(`os_srv_state_${currentServerId}`, JSON.stringify({
+        await window.dbManager.saveRoomSettings(currentServerId, {
             name: activeServer.name,
             icon: activeServer.icon || '',
             channels: activeServer.channels,
-            roles: activeServer.roles || [],
             ownerId: activeServer.ownerId
-        }));
+        });
+        if (activeServer.roles && activeServer.roles.length) {
+            await window.dbManager.saveRole(currentServerId, activeServer.roles);
+        }
     } catch(e) {
-        console.error("[ALCORD Distributed] Error saving server state to local storage:", e);
+        console.error("[ALCORD Distributed] Error saving server state to IndexedDB:", e);
     }
 }
 
@@ -1498,6 +1523,30 @@ function connectAsClient(serverId, joinGeneration) {
                     triggerNotification(`#${chName} Kanalında Yeni Mesaj`, `${data.senderName}: ${data.text || 'Dosya paylaştı.'}`);
                 }
             }
+            else if (data.type === 'history_chunk') {
+                console.log(`[ALCORD Sync] Received history chunk ${data.chunkIndex + 1}/${data.totalChunks} containing ${data.messages.length} messages.`);
+                
+                (async () => {
+                    try {
+                        for (const msg of data.messages) {
+                            await window.dbManager.saveMessage(msg);
+                        }
+                        
+                        if (data.chunkIndex === data.totalChunks - 1) {
+                            console.log('[ALCORD Sync] History sync complete. Reloading chat...');
+                            await loadMessagesForActiveChannel();
+                            showToast('Geçmiş mesajlar senkronize edildi.', 'success');
+                        } else {
+                            const target = activeDMUserId ? activeDMUserId : activeTextChannelId;
+                            if (data.messages.some(m => m.channelId === target)) {
+                                await loadMessagesForActiveChannel();
+                            }
+                        }
+                    } catch (err) {
+                        console.error('[ALCORD Sync] Error saving sync chunk:', err);
+                    }
+                })();
+            }
             else if (data.type === 'typing') {
                 handleTypingReceived(data.senderId, data.isTyping, data.channelId);
             }
@@ -1559,13 +1608,13 @@ function tryBecomeHost(serverId, joinGeneration) {
         config: { 'iceServers': [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] }
     });
     
-    serverHostPeer.on('open', (id) => {
+    serverHostPeer.on('open', async (id) => {
         if (joinGeneration !== serverJoinGeneration || currentServerId !== serverId) return;
         hideMigrationOverlay(); // Hosting successful, hide lock screen!
         console.log(`[ALCORD Distributed] We successfully registered as the Host for: ${serverId}`);
         isHost = true;
         
-        const hasLoaded = loadServerStateFromLocal(serverId);
+        const hasLoaded = await loadServerStateFromLocal(serverId);
         if (!hasLoaded) {
             const isCreator = serverId === localStorage.getItem('os_my_server_virtual_id');
             activeServer = {
@@ -1706,6 +1755,12 @@ async function applyRNNoiseProcessing(stream) {
     micGainNode.gain.value = parseFloat(settingsGainSlider.value);
     const destination = audioCtx.createMediaStreamDestination();
     
+    // Reset any old local gate stats/state
+    localGateRmsHistory = [];
+    localVolumeAnalyser = null;
+    localAnalyserFilterNode = audioCtx.createGain();
+    localAnalyserFilterNode.gain.value = 1.0;
+    
     if (rnnoiseReady && settingsNoiseToggle.checked) {
         try {
             let workletUrl = 'rnnoise-processor.js';
@@ -1730,18 +1785,47 @@ async function applyRNNoiseProcessing(stream) {
                 '@sapphi-red/web-noise-suppressor/rnnoise',
                 { processorOptions: { maxChannels: 1, wasmBinary: rnnoiseWasmBinary.slice(0) } }
             );
-            source.connect(micGainNode);
-            micGainNode.connect(activeRnnoiseNode);
-            activeRnnoiseNode.connect(destination);
-            console.log('[RNNoise] Noise suppression activated successfully!');
+            // Connect: source -> activeRnnoiseNode -> localAnalyserFilterNode -> micGainNode -> destination
+            source.connect(activeRnnoiseNode);
+            activeRnnoiseNode.connect(localAnalyserFilterNode);
+            localAnalyserFilterNode.connect(micGainNode);
+            micGainNode.connect(destination);
+            console.log('[RNNoise] Noise suppression activated successfully with intermediate filter tap!');
         } catch(e) {
             console.error('[RNNoise] Worklet or Node failed to activate, falling back to clean mic:', e);
-            source.connect(micGainNode);
+            source.connect(localAnalyserFilterNode);
+            localAnalyserFilterNode.connect(micGainNode);
             micGainNode.connect(destination);
         }
     } else {
-        source.connect(micGainNode);
+        source.connect(localAnalyserFilterNode);
+        localAnalyserFilterNode.connect(micGainNode);
         micGainNode.connect(destination);
+    }
+    
+    // Now, create the localVolumeAnalyser and its filters
+    try {
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        
+        // Highpass Filter (150Hz) - cuts off low end desk thumps
+        const hpFilter = audioCtx.createBiquadFilter();
+        hpFilter.type = 'highpass';
+        hpFilter.frequency.value = 150;
+        
+        // Lowpass Filter (3000Hz) - cuts off high frequency click/hiss while retaining full vocal range
+        const lpFilter = audioCtx.createBiquadFilter();
+        lpFilter.type = 'lowpass';
+        lpFilter.frequency.value = 3000;
+        
+        localAnalyserFilterNode.connect(hpFilter);
+        hpFilter.connect(lpFilter);
+        lpFilter.connect(analyser);
+        
+        localVolumeAnalyser = analyser;
+        console.log('[Audio Graph] Analyser and vocal filters tapped into clean signal path.');
+    } catch (e) {
+        console.error('[Audio Graph] Failed to build local analyser path:', e);
     }
     
     localAudioSource = source;
@@ -1757,6 +1841,8 @@ async function updateLocalAudioGraph() {
         // Disconnect everything first to clear the graph
         try { localAudioSource.disconnect(); } catch(e){}
         if (micGainNode) { try { micGainNode.disconnect(); } catch(e){} }
+        if (localAnalyserFilterNode) { try { localAnalyserFilterNode.disconnect(); } catch(e){} }
+        if (localVolumeAnalyser) { try { localVolumeAnalyser.disconnect(); } catch(e){} }
         if (activeRnnoiseNode) {
             try {
                 activeRnnoiseNode.port.postMessage('destroy');
@@ -1764,6 +1850,10 @@ async function updateLocalAudioGraph() {
             } catch(e) {}
             activeRnnoiseNode = null;
         }
+        
+        localAnalyserFilterNode = activeAudioCtx.createGain();
+        localAnalyserFilterNode.gain.value = 1.0;
+        localVolumeAnalyser = null;
         
         // Re-route dynamically based on active toggle status
         if (rnnoiseReady && settingsNoiseToggle.checked) {
@@ -1787,20 +1877,51 @@ async function updateLocalAudioGraph() {
                 { processorOptions: { maxChannels: 1, wasmBinary: rnnoiseWasmBinary.slice(0) } }
             );
             
-            localAudioSource.connect(micGainNode);
-            micGainNode.connect(activeRnnoiseNode);
-            activeRnnoiseNode.connect(localAudioDestination);
-            console.log('[RNNoise] Dynamic audio graph updated: Noise suppression ENABLED.');
-        } else {
-            localAudioSource.connect(micGainNode);
+            // Connect: source -> activeRnnoiseNode -> localAnalyserFilterNode -> micGainNode -> destination
+            localAudioSource.connect(activeRnnoiseNode);
+            activeRnnoiseNode.connect(localAnalyserFilterNode);
+            localAnalyserFilterNode.connect(micGainNode);
             micGainNode.connect(localAudioDestination);
-            console.log('[RNNoise] Dynamic audio graph updated: Noise suppression DISABLED.');
+            console.log('[RNNoise] Dynamic audio graph updated: Noise suppression ENABLED with intermediate tap.');
+        } else {
+            // Connect: source -> localAnalyserFilterNode -> micGainNode -> destination
+            localAudioSource.connect(localAnalyserFilterNode);
+            localAnalyserFilterNode.connect(micGainNode);
+            micGainNode.connect(localAudioDestination);
+            console.log('[RNNoise] Dynamic audio graph updated: Noise suppression DISABLED with intermediate tap.');
+        }
+        
+        // Connect the tap node to the analyser and filters
+        try {
+            const analyser = activeAudioCtx.createAnalyser();
+            analyser.fftSize = 256;
+            
+            const hpFilter = activeAudioCtx.createBiquadFilter();
+            hpFilter.type = 'highpass';
+            hpFilter.frequency.value = 150;
+            
+            const lpFilter = activeAudioCtx.createBiquadFilter();
+            lpFilter.type = 'lowpass';
+            lpFilter.frequency.value = 3000;
+            
+            localAnalyserFilterNode.connect(hpFilter);
+            hpFilter.connect(lpFilter);
+            lpFilter.connect(analyser);
+            
+            localVolumeAnalyser = analyser;
+            console.log('[Audio Graph] Dynamic analyser and filters updated.');
+        } catch (e) {
+            console.error('[Audio Graph] Dynamic analyser rebuild failed:', e);
         }
     } catch (err) {
         console.error('[RNNoise] Dynamic local audio graph update failed:', err);
         // Fallback safety route
-        try { localAudioSource.connect(micGainNode); } catch(e){}
-        try { micGainNode.connect(localAudioDestination); } catch(e){}
+        try {
+            if (localAudioSource && micGainNode && localAudioDestination) {
+                localAudioSource.connect(micGainNode);
+                micGainNode.connect(localAudioDestination);
+            }
+        } catch(e){}
     }
 }
 
@@ -1808,7 +1929,7 @@ async function ensureLocalStream() {
     if (localStream) return localStream;
     try {
         const stream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false }
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
         });
         rawLocalStream = stream;
         const { processedStream, audioCtx } = await applyRNNoiseProcessing(stream);
@@ -1859,7 +1980,7 @@ async function joinVoiceChannel(channelId, force = false) {
     
     try {
         const stream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false }
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
         });
         rawLocalStream = stream;
         
@@ -1921,6 +2042,8 @@ function leaveVoiceChannel() {
     micGainNode = null;
     localAudioSource = null;
     localAudioDestination = null;
+    localVolumeAnalyser = null;
+    localAnalyserFilterNode = null;
     mediaConnections.forEach(call => call.close());
     mediaConnections.clear();
     remoteAudiosContainer.innerHTML = '';
@@ -2653,58 +2776,78 @@ function startSpeakingDetector() {
         });
         
         // Local microphone analysis
-        const streamToAnalyze = rawLocalStream || localStream;
-        if (streamToAnalyze && activeAudioCtx) {
-            let analyser = localVolumeAnalyser;
-            if (!analyser) {
-                try {
-                    analyser = activeAudioCtx.createAnalyser();
-                    analyser.fftSize = 256;
-                    
-                    const localSource = activeAudioCtx.createMediaStreamSource(streamToAnalyze);
-                    localSource.connect(analyser);
-                    localVolumeAnalyser = analyser;
-                } catch(e){}
-            }
+        if (localVolumeAnalyser && activeAudioCtx) {
+            const analyser = localVolumeAnalyser;
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            analyser.getByteTimeDomainData(dataArray);
             
-            if (analyser) {
-                const bufferLength = analyser.frequencyBinCount;
-                const dataArray = new Uint8Array(bufferLength);
-                analyser.getByteTimeDomainData(dataArray);
-                
-                let sum = 0;
-                for (let i = 0; i < bufferLength; i++) {
-                    const val = (dataArray[i] - 128) / 128;
-                    sum += val * val;
+            let sum = 0;
+            for (let i = 0; i < bufferLength; i++) {
+                const val = (dataArray[i] - 128) / 128;
+                sum += val * val;
+            }
+            const rms = Math.sqrt(sum / bufferLength);
+            
+            const trackMuted = !localStream || !localStream.getAudioTracks()[0] || !localStream.getAudioTracks()[0].enabled || localStream.getAudioTracks()[0].muted;
+            const isMutedLocal = isMuted || trackMuted;
+
+            // --- DISCORD-STYLE ADAPTIVE INPUT SENSITIVITY NOISE GATE ---
+            if (rnnoiseReady && settingsNoiseToggle.checked && micGainNode && activeAudioCtx) {
+                // Update sliding window history (keep last 20 ticks = 2 seconds)
+                localGateRmsHistory.push(rms);
+                if (localGateRmsHistory.length > 20) {
+                    localGateRmsHistory.shift();
                 }
-                const rms = Math.sqrt(sum / bufferLength);
                 
-                const trackMuted = !streamToAnalyze.getAudioTracks()[0] || !streamToAnalyze.getAudioTracks()[0].enabled || streamToAnalyze.getAudioTracks()[0].muted;
-                const isMutedLocal = isMuted || trackMuted;
-                const isCurrentlyLoud = rms > 0.005 && !isMutedLocal;
+                // The background noise floor is estimated using the 25th percentile (highly robust against voice spikes)
+                const sortedHistory = [...localGateRmsHistory].sort((a, b) => a - b);
+                const noiseFloorIndex = Math.floor(sortedHistory.length * 0.25);
+                const noiseFloor = sortedHistory[noiseFloorIndex] || 0.002;
                 
-                if (isCurrentlyLoud) {
-                    if (!speakingStartTimes.has(myId)) {
-                        speakingStartTimes.set(myId, now);
-                    }
-                    const duration = now - speakingStartTimes.get(myId);
-                    const isSpeaking = duration >= 500; // must speak continuously for 500ms
-                    const wasSpeaking = speakingUsers.has(myId);
-                    
-                    if (isSpeaking) {
-                        speakingUsers.add(myId);
-                    }
-                    
-                    if (isSpeaking !== wasSpeaking) {
-                        renderChannelPanel();
-                    }
-                } else {
-                    speakingStartTimes.delete(myId);
-                    const wasSpeaking = speakingUsers.has(myId);
-                    if (wasSpeaking) {
-                        speakingUsers.delete(myId);
-                        renderChannelPanel();
-                    }
+                // Adaptive threshold dynamically scales: safety multiplier (2.5x) above estimated background noise floor, with a hard floor of 0.012
+                const adaptiveThreshold = Math.max(0.012, noiseFloor * 2.5);
+                
+                const userGain = parseFloat(settingsGainSlider.value);
+                
+                if (rms >= adaptiveThreshold && !isMutedLocal) {
+                    localGateLastSpeechTime = now;
+                }
+                
+                // Hang time of 180ms prevents cutting off natural spoken sentence endings
+                const shouldOpen = (now - localGateLastSpeechTime < 180) && !isMutedLocal;
+                const currentTarget = shouldOpen ? userGain : 0.0;
+                
+                // Ultra-fast 10ms exponential smoothing prevents audio clicks and clamps instantly
+                micGainNode.gain.setTargetAtTime(currentTarget, activeAudioCtx.currentTime, 0.01);
+            } else if (micGainNode) {
+                // Normal state: restore to user gain value when suppression is toggled off
+                micGainNode.gain.value = isMutedLocal ? 0.0 : parseFloat(settingsGainSlider.value);
+            }
+
+            const isCurrentlyLoud = rms > 0.005 && !isMutedLocal;
+            
+            if (isCurrentlyLoud) {
+                if (!speakingStartTimes.has(myId)) {
+                    speakingStartTimes.set(myId, now);
+                }
+                const duration = now - speakingStartTimes.get(myId);
+                const isSpeaking = duration >= 500; // must speak continuously for 500ms
+                const wasSpeaking = speakingUsers.has(myId);
+                
+                if (isSpeaking) {
+                    speakingUsers.add(myId);
+                }
+                
+                if (isSpeaking !== wasSpeaking) {
+                    renderChannelPanel();
+                }
+            } else {
+                speakingStartTimes.delete(myId);
+                const wasSpeaking = speakingUsers.has(myId);
+                if (wasSpeaking) {
+                    speakingUsers.delete(myId);
+                    renderChannelPanel();
                 }
             }
         } else {
@@ -3840,48 +3983,54 @@ function getMessageHistoryKey(channelOrUserId) {
     return `os_msg_hist_${srvId}_${channelOrUserId}`;
 }
 
-function loadMessagesForActiveChannel() {
+async function loadMessagesForActiveChannel() {
     const target = activeDMUserId ? activeDMUserId : activeTextChannelId;
     if (!target) {
         messages = [];
         return;
     }
-    const key = getMessageHistoryKey(target);
     try {
-        const raw = localStorage.getItem(key);
-        messages = raw ? JSON.parse(raw) : [];
+        messages = await window.dbManager.getRoomMessages(target);
+        
+        // Dispatch custom event to trigger UI refresh reactively without freeze
+        const event = new CustomEvent('alcord-ui-refresh', { detail: { type: 'load-messages', channelId: target } });
+        window.dispatchEvent(event);
     } catch(e) {
+        console.error("Mesaj geçmişi yüklenemedi:", e);
         messages = [];
     }
 }
 
-function persistMessage(msg) {
+async function persistMessage(msg) {
     const target = activeDMUserId ? activeDMUserId : activeTextChannelId;
     const dest = msg.channelId || target;
     if (!dest) return;
     
-    const key = getMessageHistoryKey(dest);
     try {
-        let history = [];
-        const raw = localStorage.getItem(key);
-        if (raw) history = JSON.parse(raw);
+        const msgToSave = {
+            ...msg,
+            channelId: dest,
+            timestamp: msg.timestamp || Date.now()
+        };
+        await window.dbManager.saveMessage(msgToSave);
         
-        // Remove large file base64 data to avoid localstorage overflow
-        const msgToSave = { ...msg };
-        if (msgToSave.file && msgToSave.file.data && msgToSave.file.data.length > 50000) {
-            msgToSave.file = { ...msgToSave.file, data: '' }; // clear data, keep metadata
-        }
-        
-        history.push(msgToSave);
-        
-        // Keep last 150 messages in history to save space
-        if (history.length > 150) history.shift();
-        
-        localStorage.setItem(key, JSON.stringify(history));
+        // Dispatch custom event to trigger UI refresh reactively
+        const event = new CustomEvent('alcord-ui-refresh', { detail: { type: 'save-message', message: msgToSave } });
+        window.dispatchEvent(event);
     } catch(e) {
         console.error("Mesaj kaydedilemedi:", e);
     }
 }
+
+// Reactive UI Refresh Event Listener
+window.addEventListener('alcord-ui-refresh', (e) => {
+    const target = activeDMUserId ? activeDMUserId : activeTextChannelId;
+    if (e.detail.type === 'load-messages' && e.detail.channelId === target) {
+        renderMessages();
+    } else if (e.detail.type === 'save-message' && e.detail.message.channelId === target) {
+        renderMessages();
+    }
+});
 
 function renderMessages() {
     const target = activeDMUserId ? activeDMUserId : activeTextChannelId;
@@ -6911,6 +7060,63 @@ if (gifSearchInput) {
         gifSearchTimeout = setTimeout(() => {
             window.searchGifs(query);
         }, 500);
+    });
+}
+
+async function triggerLateJoinSync(conn) {
+    try {
+        console.log(`[Headless Host] Starting Late Join Sync for peer: ${conn.peer}`);
+        const archive = await window.loadArchiveNode();
+        if (!archive || !archive.length) {
+            console.log('[Headless Host] No archive history to sync.');
+            return;
+        }
+
+        const CHUNK_SIZE = 15; // Keep UI responsive
+        const totalChunks = Math.ceil(archive.length / CHUNK_SIZE);
+        
+        for (let i = 0; i < totalChunks; i++) {
+            if (!conn || !conn.open) {
+                console.log(`[Headless Host] Sync interrupted. Peer ${conn.peer} disconnected.`);
+                break;
+            }
+
+            const chunkMessages = archive.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+            const packet = {
+                type: 'history_chunk',
+                chunkIndex: i,
+                totalChunks: totalChunks,
+                messages: chunkMessages
+            };
+
+            // Backpressure check
+            await waitForBufferDrain(conn);
+
+            // Send chunk
+            conn.send(packet);
+            console.log(`[Headless Host] Sent history chunk ${i + 1}/${totalChunks} to ${conn.peer}`);
+        }
+        console.log(`[Headless Host] Late Join Sync completed for ${conn.peer}`);
+    } catch (e) {
+        console.error('[Headless Host] Late Join Sync error:', e);
+    }
+}
+
+async function waitForBufferDrain(conn) {
+    const threshold = 16384; // 16KB
+    return new Promise((resolve) => {
+        const check = () => {
+            if (!conn || !conn.open || !conn.dataChannel) {
+                resolve();
+                return;
+            }
+            if (conn.dataChannel.bufferedAmount <= threshold) {
+                resolve();
+            } else {
+                setTimeout(check, 20); // wait 20ms and check again
+            }
+        };
+        check();
     });
 }
 
