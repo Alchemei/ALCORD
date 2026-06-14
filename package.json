@@ -8,7 +8,9 @@
     "dev": "electron .",
     "dev2": "electron . --profile=2",
     "web": "node server.js",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win"
   },
   "author": "",
   "license": "ISC",
@@ -34,6 +36,29 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "ALCORD"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "icon.png"
+    },
+    "dmg": {
+      "title": "ALCORD",
+      "icon": "icon.png",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
     },
     "files": [
       "**/*",

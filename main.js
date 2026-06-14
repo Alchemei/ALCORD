@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, desktopCapturer, Tray, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, session, desktopCapturer, Tray, Menu, globalShortcut } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 
@@ -52,6 +52,10 @@ function matchesHotkey(pressed, hotkey) {
 }
 
 function startKeyListener() {
+  if (process.platform !== 'win32') {
+    console.log('[ALCORD] Non-Windows platform detected. Skipping keylistener.exe spawn.');
+    return;
+  }
   const exePath = path.join(__dirname, 'keylistener.exe');
   keyListenerProcess = spawn(exePath);
 
@@ -188,15 +192,89 @@ function createTray() {
   });
 }
 
+function convertToAccelerator(hotkey) {
+  if (!hotkey || !hotkey.key) return null;
+  let parts = [];
+  if (hotkey.ctrlKey) parts.push('CommandOrControl');
+  if (hotkey.altKey) parts.push('Alt');
+  if (hotkey.shiftKey) parts.push('Shift');
+  
+  let keyName = hotkey.key;
+  if (keyName === ' ') keyName = 'Space';
+  else if (keyName === 'Control') return null;
+  else if (keyName === 'Alt') return null;
+  else if (keyName === 'Shift') return null;
+  else if (keyName === 'Meta') return null;
+  else if (keyName === 'Pause') keyName = 'Pause';
+  else if (keyName === 'ScrollLock') keyName = 'ScrollLock';
+  else if (keyName === 'PrintScreen') keyName = 'PrintScreen';
+  else if (keyName === 'CapsLock') keyName = 'Capslock';
+  else if (keyName === 'NumLock') keyName = 'Numlock';
+  else if (keyName === 'Insert') keyName = 'Insert';
+  else if (keyName === 'Delete') keyName = 'Delete';
+  else if (keyName === 'Home') keyName = 'Home';
+  else if (keyName === 'End') keyName = 'End';
+  else if (keyName === 'PageUp') keyName = 'PageUp';
+  else if (keyName === 'PageDown') keyName = 'PageDown';
+  else if (keyName === 'ArrowUp') keyName = 'Up';
+  else if (keyName === 'ArrowDown') keyName = 'Down';
+  else if (keyName === 'ArrowLeft') keyName = 'Left';
+  else if (keyName === 'ArrowRight') keyName = 'Right';
+  else if (keyName.length === 1) keyName = keyName.toUpperCase();
+  
+  parts.push(keyName);
+  return parts.join('+');
+}
+
 // Global Kısayol IPC Kayıt Dinleyicisi
 ipcMain.on('register-hotkeys', (event, { hotkeyMic, hotkeyDeafen }) => {
   currentMicHotkey = hotkeyMic;
   currentDeafenHotkey = hotkeyDeafen;
-  console.log('Registered global hotkeys via C# Hook:', { currentMicHotkey, currentDeafenHotkey });
+  
+  let micSuccess = true;
+  let deafenSuccess = true;
+  
+  if (process.platform !== 'win32') {
+    try {
+      globalShortcut.unregisterAll();
+    } catch (err) {
+      console.error('[ALCORD] Error unregistering global shortcuts:', err);
+    }
+    
+    const micAcc = convertToAccelerator(hotkeyMic);
+    if (micAcc) {
+      try {
+        const registered = globalShortcut.register(micAcc, () => {
+          if (mainWindow) mainWindow.webContents.send('toggle-mute-global');
+        });
+        micSuccess = registered;
+        console.log(`[ALCORD] Global shortcut registered for Mic: ${micAcc} -> ${registered}`);
+      } catch (err) {
+        console.error('[ALCORD] Failed to register global shortcut for Mic:', err);
+        micSuccess = false;
+      }
+    }
+    
+    const deafenAcc = convertToAccelerator(hotkeyDeafen);
+    if (deafenAcc) {
+      try {
+        const registered = globalShortcut.register(deafenAcc, () => {
+          if (mainWindow) mainWindow.webContents.send('toggle-deafen-global');
+        });
+        deafenSuccess = registered;
+        console.log(`[ALCORD] Global shortcut registered for Deafen: ${deafenAcc} -> ${registered}`);
+      } catch (err) {
+        console.error('[ALCORD] Failed to register global shortcut for Deafen:', err);
+        deafenSuccess = false;
+      }
+    }
+  } else {
+    console.log('Registered global hotkeys via C# Hook:', { currentMicHotkey, currentDeafenHotkey });
+  }
   
   event.reply('hotkey-register-status', {
-    mic: { shortcut: hotkeyMic ? hotkeyMic.key : null, success: true },
-    deafen: { shortcut: hotkeyDeafen ? hotkeyDeafen.key : null, success: true }
+    mic: { shortcut: hotkeyMic ? hotkeyMic.key : null, success: micSuccess },
+    deafen: { shortcut: hotkeyDeafen ? hotkeyDeafen.key : null, success: deafenSuccess }
   });
 });
 
@@ -229,6 +307,13 @@ app.on('will-quit', () => {
   isQuitting = true;
   if (keyListenerProcess) {
     keyListenerProcess.kill();
+  }
+  if (process.platform !== 'win32') {
+    try {
+      globalShortcut.unregisterAll();
+    } catch (err) {
+      console.error('[ALCORD] Error during unregisterAll on quit:', err);
+    }
   }
 });
 
