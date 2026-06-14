@@ -509,7 +509,13 @@ function initApp() {
     // Load Joined Servers
     const rawServers = localStorage.getItem('os_joined_servers');
     if(rawServers) {
-        try { joinedServers = JSON.parse(rawServers); } catch(e) { joinedServers = []; }
+        try { 
+            joinedServers = JSON.parse(rawServers); 
+            // Clean up any duplicate server that was incorrectly saved with the user's peer ID (myId)
+            joinedServers = joinedServers.filter(s => s.id !== myId);
+        } catch(e) { 
+            joinedServers = []; 
+        }
     } else { joinedServers = []; }
 
     // Load Volume Settings
@@ -644,19 +650,26 @@ function initApp() {
         console.error('PeerJS Hatası:', err);
         if (isCurrentServerPeerError(err)) {
             if (isHost) {
-                console.log("[ALCORD Distributed] Main peer error occurred but we are already hosting. Ignoring retry.");
+                console.log("[ALCORD] Main peer error occurred but we are already hosting. Ignoring retry.");
                 return;
             }
-            const delay = getDeterministicMigrationDelay();
-            console.log(`[ALCORD Distributed] Server host error. Attempting takeover in ${delay.toFixed(0)}ms...`);
-            const retryGen = serverJoinGeneration;
-            clearClientConnectTimeout();
-            clearHostMigrationTimer();
-            setTimeout(() => {
-                if (retryGen === serverJoinGeneration && currentServerId) {
-                    tryBecomeHost(currentServerId, serverJoinGeneration);
-                }
-            }, delay);
+            const isCreator = currentServerId === localStorage.getItem('os_my_server_virtual_id');
+            if (isCreator) {
+                const delay = getDeterministicMigrationDelay();
+                console.log(`[ALCORD] Server host error. Retrying hosting in ${delay.toFixed(0)}ms...`);
+                const retryGen = serverJoinGeneration;
+                clearClientConnectTimeout();
+                clearHostMigrationTimer();
+                setTimeout(() => {
+                    if (retryGen === serverJoinGeneration && currentServerId) {
+                        tryBecomeHost(currentServerId, serverJoinGeneration);
+                    }
+                }, delay);
+            } else {
+                console.log(`[ALCORD] Connection failed for current server.`);
+                showToast('Sunucu sahibi çevrimdışı. Bağlantı kurulamadı.', 'error');
+                renderHome();
+            }
             return;
         }
         if (err.type === 'peer-not-found' || err.type === 'unavailable-id') {
@@ -830,30 +843,7 @@ function handleClientConnection(conn) {
     });
     conn.on('data', async (data) => {
         if (data.type === 'intro') {
-            // Update ownerId if the connecting peer is the original creator
-            if (data.isCreator) {
-                activeServer.ownerId = conn.peer;
-                await saveServerStateLocal();
-            }
-
             const isOwner = conn.peer === activeServer.ownerId;
-
-            // Distributed Server Handover: If true owner connects, yield host role to them
-            if (activeServer.ownerId && isOwner && myId !== activeServer.ownerId) {
-                console.log(`[ALCORD Distributed] Owner ${conn.peer} has joined. Yielding Host role...`);
-                conn.send({ type: 'yield-host' });
-                announceHostShutdown();
-                setTimeout(() => {
-                    destroyServerHostPeerSilently();
-                    isHost = false;
-                    setTimeout(() => {
-                        if (currentServerId) {
-                            joinServer(currentServerId);
-                        }
-                    }, 5000); // Wait 5s (increased from 4s) to allow Creator to fully boot as Host
-                }, 200); // 200ms is enough to transmit the yield-host packet
-                return;
-            }
 
             const savedRoleId = isOwner ? 'role_owner' : (serverMemberRoles.get(conn.peer) || 'role_member');
             const isPeerAdmin = isOwner || savedRoleId === 'role_admin' || serverAdminIds.has(conn.peer);
@@ -1205,26 +1195,41 @@ function armHostStateWatchdog(conn, serverId, joinGeneration) {
     clearHostStateWatchdog();
     hostStateWatchdogTimer = setTimeout(() => {
         if (joinGeneration !== serverJoinGeneration || hostConnection !== conn) return;
-        console.warn(`[ALCORD Distributed] Host watchdog timeout for ${serverId}. Triggering migration...`);
+        console.warn(`[ALCORD] Host watchdog timeout for ${serverId}.`);
         closeHostConnectionSilently();
-        scheduleHostMigration(serverId, joinGeneration);
+        showDisconnectBanner('Sunucu bağlantısı zaman aşımına uğradı.');
     }, 12000);
 }
 
-function scheduleHostMigration(serverId, joinGeneration) {
-    if (joinGeneration !== serverJoinGeneration || currentServerId !== serverId) return;
-    clearHostMigrationTimer();
-    showMigrationOverlay(); // Lock screen with blur during migration election!
-    
-    const migrationDelay = getDeterministicMigrationDelay();
-    console.log(`[ALCORD Distributed] Scheduling host migration for ${serverId} in ${migrationDelay.toFixed(0)}ms...`);
-    
-    hostMigrationTimer = setTimeout(() => {
-        if (joinGeneration !== serverJoinGeneration || currentServerId !== serverId) return;
-        console.log(`[ALCORD Distributed] Host migration timer fired. Attempting to become Host...`);
-        tryBecomeHost(serverId, joinGeneration);
-    }, migrationDelay);
+// --- DISCONNECT BANNER MANAGEMENT ---
+function showDisconnectBanner(message) {
+    const banner = document.getElementById('disconnectBanner');
+    const bannerText = document.getElementById('disconnectBannerText');
+    if (banner) {
+        if (bannerText) bannerText.textContent = message || 'Sunucu bağlantısı koptu';
+        banner.classList.remove('hidden');
+        banner.classList.add('flex');
+    }
+    showToast(message || 'Sunucu bağlantısı koptu.', 'error');
 }
+
+function hideDisconnectBanner() {
+    const banner = document.getElementById('disconnectBanner');
+    if (banner) {
+        banner.classList.add('hidden');
+        banner.classList.remove('flex');
+    }
+}
+
+window.reconnectToServer = function() {
+    if (!currentServerId) {
+        showToast('Bağlanılacak sunucu bulunamadı.', 'error');
+        return;
+    }
+    hideDisconnectBanner();
+    showToast('Yeniden bağlanılıyor...', 'info');
+    joinServer(currentServerId);
+};
 
 function startServerStateInterval() {
     stopServerStateInterval();
@@ -1302,6 +1307,7 @@ function joinServer(serverId) {
     speakingUsers.clear();
     loadMessagesForActiveChannel();
     
+    hideDisconnectBanner();
     showToast('Sunucu bağlantısı kuruluyor...', 'info');
     connectAsClient(serverId, joinGeneration);
 }
@@ -1314,23 +1320,30 @@ function connectAsClient(serverId, joinGeneration) {
     destroyServerHostPeerSilently();
     clearClientConnectTimeout();
     
-    console.log(`[ALCORD Distributed] Connecting to ${serverId} as Client...`);
+    console.log(`[ALCORD] Connecting to ${serverId} as Client...`);
     const conn = peer.connect(serverId, { reliable: true });
     hostConnection = conn;
     
     clientConnectTimeout = setTimeout(() => {
         if (joinGeneration !== serverJoinGeneration || hostConnection !== conn) return;
-        console.log(`[ALCORD Distributed] Client connection to ${serverId} timed out. Trying to become Host...`);
+        console.log(`[ALCORD] Client connection to ${serverId} timed out.`);
         clearClientConnectTimeout();
         conn._alcordIntentClose = true;
         try { conn.close(); } catch(e){}
         hostConnection = null;
-        tryBecomeHost(serverId, joinGeneration);
+        
+        const isCreator = serverId === localStorage.getItem('os_my_server_virtual_id');
+        if (isCreator) {
+            tryBecomeHost(serverId, joinGeneration);
+        } else {
+            showDisconnectBanner('Sunucu sahibi çevrimdışı. Bağlantı kurulamadı.');
+        }
     }, 4500);
     
     conn.on('open', () => {
         clearClientConnectTimeout();
         hideMigrationOverlay(); // Connection to host successful, hide lock screen!
+        hideDisconnectBanner(); // Clear any previous disconnect banner
         if (joinGeneration !== serverJoinGeneration || hostConnection !== conn || currentServerId !== serverId) {
             conn._alcordIntentClose = true;
             try { conn.close(); } catch(e){}
@@ -1348,37 +1361,20 @@ function connectAsClient(serverId, joinGeneration) {
             voiceChannelId: activeVoiceChannelId 
         });
         armHostStateWatchdog(conn, serverId, joinGeneration);
-        if (isCreator) {
-            showToast('Yedek sunucuya bağlandınız, sunucu sahipliği devralınıyor...', 'info');
-        } else {
-            showToast('Sunucu bağlantısı sağlandı.', 'success');
-        }
+        showToast('Sunucu bağlantısı sağlandı.', 'success');
     });
     
     conn.on('data', (data) => {
         try {
             if (joinGeneration !== serverJoinGeneration || hostConnection !== conn || currentServerId !== serverId) return;
-            if (data.type === 'yield-host') {
-                console.log("[ALCORD Distributed] Host has yielded. Becoming Host...");
-                showToast('Sunucu kurucusu bağlandı. Sahiplik devrediliyor...', 'info');
-                closeHostConnectionSilently();
-                clearClientConnectTimeout();
-                clearHostMigrationTimer();
-                setTimeout(() => {
-                    if (joinGeneration === serverJoinGeneration && currentServerId === serverId) {
-                        tryBecomeHost(serverId, joinGeneration);
-                    }
-                }, 2500); // Wait 2.5s (increased from 1.5s) to allow PeerJS cloud to unregister old socket
-                return;
-            }
             if (data.type === 'host-shutdown') {
-                console.log("[ALCORD Distributed] Host announced shutdown. Attempting Host Migration...");
+                console.log("[ALCORD] Host announced shutdown.");
                 clearHostStateWatchdog();
                 clearClientConnectTimeout();
                 conn._alcordIntentClose = true;
                 try { conn.close(); } catch(e){}
                 if (hostConnection === conn) hostConnection = null;
-                scheduleHostMigration(serverId, joinGeneration);
+                showDisconnectBanner('Sunucu sahibi çevrimdışı oldu.');
                 return;
             }
             
@@ -1571,26 +1567,30 @@ function connectAsClient(serverId, joinGeneration) {
         clearHostStateWatchdog();
         if (conn._alcordIntentClose || hostConnection !== conn || joinGeneration !== serverJoinGeneration) return;
         hostConnection = null;
-        console.log(`[ALCORD Distributed] Host connection closed. Attempting Host Migration...`);
-        showToast('Mevcut sunucu sahibi çevrimdışı oldu. Otomatik yedek sunucuya aktarılıyorsunuz...', 'warning');
-        scheduleHostMigration(serverId, joinGeneration);
+        console.log(`[ALCORD] Host connection closed.`);
+        showDisconnectBanner('Sunucu sahibi çevrimdışı oldu. Bağlantı koptu.');
     });
     
     conn.on('error', (connErr) => {
-        console.error("[ALCORD Distributed] hostConnection error:", connErr);
+        console.error("[ALCORD] hostConnection error:", connErr);
         clearHostStateWatchdog();
         if (conn._alcordIntentClose || hostConnection !== conn || joinGeneration !== serverJoinGeneration) return;
         hostConnection = null;
-        showToast('Sunucu bağlantısı koptu. Yedek sunucu aranıyor...', 'warning');
-        scheduleHostMigration(serverId, joinGeneration);
+        showDisconnectBanner('Sunucu bağlantısı koptu.');
     });
 }
 
 function tryBecomeHost(serverId, joinGeneration) {
     if (joinGeneration !== serverJoinGeneration || currentServerId !== serverId) return;
     
+    const isCreator = serverId === localStorage.getItem('os_my_server_virtual_id');
+    if (!isCreator) {
+        console.log("[ALCORD] We are not the creator of this server. Aborting tryBecomeHost.");
+        return;
+    }
+    
     if (isHost && serverHostPeer && !serverHostPeer.destroyed) {
-        console.log("[ALCORD Distributed] Already hosting successfully. Ignoring redundant tryBecomeHost.");
+        console.log("[ALCORD] Already hosting successfully. Ignoring redundant tryBecomeHost.");
         return;
     }
     
@@ -1599,7 +1599,7 @@ function tryBecomeHost(serverId, joinGeneration) {
     clearClientConnectTimeout();
     closeHostConnectionSilently();
     
-    console.log(`[ALCORD Distributed] Attempting to register serverHostPeer for ID: ${serverId}`);
+    console.log(`[ALCORD] Attempting to register serverHostPeer for ID: ${serverId}`);
     
     serverHostPeer = new Peer(serverId, {
         host: '0.peerjs.com',
@@ -1611,16 +1611,15 @@ function tryBecomeHost(serverId, joinGeneration) {
     serverHostPeer.on('open', async (id) => {
         if (joinGeneration !== serverJoinGeneration || currentServerId !== serverId) return;
         hideMigrationOverlay(); // Hosting successful, hide lock screen!
-        console.log(`[ALCORD Distributed] We successfully registered as the Host for: ${serverId}`);
+        console.log(`[ALCORD] We successfully registered as the Host for: ${serverId}`);
         isHost = true;
         
         const hasLoaded = await loadServerStateFromLocal(serverId);
         if (!hasLoaded) {
-            const isCreator = serverId === localStorage.getItem('os_my_server_virtual_id');
             activeServer = {
                 id: serverId,
-                name: isCreator ? (localStorage.getItem('os_my_server_name') || `${myUsername}'in Ağı`) : 'Dağıtık Ağ',
-                icon: isCreator ? (localStorage.getItem('os_my_server_icon') || '') : '',
+                name: localStorage.getItem('os_my_server_name') || `${myUsername}'in Ağı`,
+                icon: localStorage.getItem('os_my_server_icon') || '',
                 roles: [
                     { id: 'role_owner', name: 'Kurucu', color: '#f59e0b', order: 1 },
                     { id: 'role_admin', name: 'Yönetici', color: '#a855f7', order: 2 },
@@ -1632,7 +1631,7 @@ function tryBecomeHost(serverId, joinGeneration) {
                     { id: 'tasarim', name: 'tasarım', type: 'text' },
                     { id: 'genel_ses', name: 'Genel Toplantı', type: 'voice' }
                 ],
-                ownerId: isCreator ? myId : serverId,
+                ownerId: myId,
                 members: new Map()
             };
         }
@@ -1643,8 +1642,8 @@ function tryBecomeHost(serverId, joinGeneration) {
             username: myUsername, 
             profilePic: myProfilePic, 
             voiceChannelId: null, 
-            role: myId === activeServer.ownerId ? 'owner' : 'member',
-            roleId: myId === activeServer.ownerId ? 'role_owner' : 'role_member'
+            role: 'owner',
+            roleId: 'role_owner'
         });
         
         connections.clear();
@@ -1659,29 +1658,24 @@ function tryBecomeHost(serverId, joinGeneration) {
         renderServerView();
         broadcastServerState();
         startServerStateInterval();
-        const isOriginalOwner = serverId === localStorage.getItem('os_my_server_virtual_id');
-        if (isOriginalOwner) {
-            showToast('Sunucu başarıyla başlatıldı (Host).', 'success');
-        } else {
-            showToast('Sunucu sahibi çevrimdışı. Yeni yedek sunucu sahibi siz oldunuz!', 'success');
-        }
+        showToast('Sunucu başarıyla başlatıldı (Host).', 'success');
     });
     
     serverHostPeer.on('error', (err) => {
         if (joinGeneration !== serverJoinGeneration || currentServerId !== serverId) return;
         if (err.type === 'unavailable-id') {
-            console.log(`[ALCORD Distributed] Someone is already hosting ${serverId}. Retrying as Client in 2 seconds...`);
+            console.log(`[ALCORD] Server ID ${serverId} is still occupied. Retrying hosting in 2 seconds...`);
             isHost = false;
             stopServerStateInterval();
             destroyServerHostPeerSilently();
             clearClientConnectTimeout();
             setTimeout(() => {
                 if (joinGeneration === serverJoinGeneration && currentServerId === serverId) {
-                    connectAsClient(serverId, joinGeneration);
+                    tryBecomeHost(serverId, joinGeneration);
                 }
             }, 2000);
         } else {
-            console.error("[ALCORD Distributed] serverHostPeer connection error:", err);
+            console.error("[ALCORD] serverHostPeer connection error:", err);
             showToast('Bağlantı hatası: ' + err.message, 'error');
         }
     });
@@ -1808,10 +1802,10 @@ async function applyRNNoiseProcessing(stream) {
         const analyser = audioCtx.createAnalyser();
         analyser.fftSize = 256;
         
-        // Highpass Filter (150Hz) - cuts off low end desk thumps
+        // Highpass Filter (80Hz) - cuts off low end desk thumps while preserving vocal range
         const hpFilter = audioCtx.createBiquadFilter();
         hpFilter.type = 'highpass';
-        hpFilter.frequency.value = 150;
+        hpFilter.frequency.value = 80;
         
         // Lowpass Filter (3000Hz) - cuts off high frequency click/hiss while retaining full vocal range
         const lpFilter = audioCtx.createBiquadFilter();
@@ -1898,7 +1892,7 @@ async function updateLocalAudioGraph() {
             
             const hpFilter = activeAudioCtx.createBiquadFilter();
             hpFilter.type = 'highpass';
-            hpFilter.frequency.value = 150;
+            hpFilter.frequency.value = 80;
             
             const lpFilter = activeAudioCtx.createBiquadFilter();
             lpFilter.type = 'lowpass';
@@ -1929,7 +1923,7 @@ async function ensureLocalStream() {
     if (localStream) return localStream;
     try {
         const stream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
         });
         rawLocalStream = stream;
         const { processedStream, audioCtx } = await applyRNNoiseProcessing(stream);
@@ -1980,7 +1974,7 @@ async function joinVoiceChannel(channelId, force = false) {
     
     try {
         const stream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
         });
         rawLocalStream = stream;
         
@@ -2805,8 +2799,8 @@ function startSpeakingDetector() {
                 const noiseFloorIndex = Math.floor(sortedHistory.length * 0.25);
                 const noiseFloor = sortedHistory[noiseFloorIndex] || 0.002;
                 
-                // Adaptive threshold dynamically scales: safety multiplier (2.5x) above estimated background noise floor, with a hard floor of 0.012
-                const adaptiveThreshold = Math.max(0.012, noiseFloor * 2.5);
+                // Adaptive threshold dynamically scales: safety multiplier (1.8x) above estimated background noise floor, with a hard floor of 0.005
+                const adaptiveThreshold = Math.max(0.005, noiseFloor * 1.8);
                 
                 const userGain = parseFloat(settingsGainSlider.value);
                 
@@ -2814,12 +2808,14 @@ function startSpeakingDetector() {
                     localGateLastSpeechTime = now;
                 }
                 
-                // Hang time of 180ms prevents cutting off natural spoken sentence endings
-                const shouldOpen = (now - localGateLastSpeechTime < 180) && !isMutedLocal;
-                const currentTarget = shouldOpen ? userGain : 0.0;
+                // Hang time of 400ms prevents cutting off natural spoken sentence endings
+                const shouldOpen = (now - localGateLastSpeechTime < 400) && !isMutedLocal;
+                // When gate closes, use a very low floor (0.001) instead of hard 0.0 to prevent 
+                // the gate from completely killing quiet speech that fluctuates near the threshold
+                const currentTarget = shouldOpen ? userGain : 0.001;
                 
-                // Ultra-fast 10ms exponential smoothing prevents audio clicks and clamps instantly
-                micGainNode.gain.setTargetAtTime(currentTarget, activeAudioCtx.currentTime, 0.01);
+                // Smooth 30ms exponential ramp prevents choppy audio transitions
+                micGainNode.gain.setTargetAtTime(currentTarget, activeAudioCtx.currentTime, 0.03);
             } else if (micGainNode) {
                 // Normal state: restore to user gain value when suppression is toggled off
                 micGainNode.gain.value = isMutedLocal ? 0.0 : parseFloat(settingsGainSlider.value);
@@ -3436,6 +3432,7 @@ function markServerOffline(serverId, badgeId, cardEl, btnEl) {
 }
 
 function renderHome() {
+    hideDisconnectBanner();
     homePanel.classList.remove('hidden');
     homePanel.style.display = 'flex';
     channelPanel.classList.add('hidden');
@@ -4786,7 +4783,14 @@ saveSettingsBtn.addEventListener('click', () => {
         activeServer.icon = tempServerIcon;
         localStorage.setItem('os_my_server_icon', tempServerIcon);
         
-        addJoinedServer(myId, activeServer.name, activeServer.icon);
+        const targetServerId = activeServer.id || currentServerId || localStorage.getItem('os_my_server_virtual_id');
+        addJoinedServer(targetServerId, activeServer.name, activeServer.icon);
+        
+        // Clean up any duplicate server that was incorrectly saved with the user's peer ID (myId)
+        if (joinedServers.some(s => s.id === myId)) {
+            joinedServers = joinedServers.filter(s => s.id !== myId);
+            saveJoinedServers();
+        }
         
         broadcastServerState();
         renderServerView();
